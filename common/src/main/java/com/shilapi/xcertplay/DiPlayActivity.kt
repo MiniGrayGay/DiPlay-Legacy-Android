@@ -68,6 +68,8 @@ import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotTethering
 import com.shilapi.xcertplay.network.WifiP2pChannels
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
+import com.shilapi.xcertplay.mirroring.PhoneTypePreference
+import com.shilapi.xcertplay.settings.ConnectionSettingsSection
 import com.shilapi.xcertplay.settings.SettingsTheme
 import com.shilapi.xcertplay.settings.SettingsWidgets
 import com.shilapi.xcertplay.transport.EvChargingConnectors
@@ -1320,6 +1322,19 @@ class DiPlayActivity : ComponentActivity() {
                 matchButton(12, 60),
             )
             card.addView(label(getString(R.string.settings_car_bluetooth_mac_subtitle), 14, MUTED).apply { setPadding(0, dp(4), 0, 0) })
+            // Which phone this head unit serves. Auto keeps today's behaviour: an iPhone starts
+            // CarPlay as soon as it is plugged in.
+            val phoneTypes = PhoneTypePreference.entries
+            choice(
+                card,
+                getString(R.string.settings_phone_type_title),
+                ConnectionSettingsSection.phoneTypeOptions(this),
+                phoneTypes.indexOf(DiPlayPreferences.phoneType(this)),
+                reconnects = false,
+            ) { DiPlayPreferences.savePhoneType(this, phoneTypes[it]) }
+            card.addView(label(getString(R.string.settings_phone_type_hint), 14, MUTED).apply {
+                setPadding(0, dp(4), 0, 0)
+            })
         }
         filteredSection(content, SettingsSection.USB_BLUETOOTH,
             getString(R.string.settings_usb_bluetooth_title), R.drawable.ic_dp_connection, ::usbBluetoothSettings)

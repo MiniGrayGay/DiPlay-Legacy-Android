@@ -726,4 +726,13 @@
     <string name="wireless_forget_device_title">La conexión inalámbrica sigue fallando</string>
     <string name="wireless_forget_device_message">CarPlay inalámbrico no ha podido conectar 4 veces seguidas. En el iPhone, ve a Ajustes → Wi-Fi, omite el punto de acceso del equipo y vuelve a emparejar y conectar.</string>
     <string name="settings_media_focus_exclusive_description">Solicita foco permanente para multimedia en lugar de permitir que otros reproductores atenúen CarPlay. Solo ayuda en unidades que silencian CarPlay al atenuarlo; puede silenciar otros reproductores. Se aplica en la próxima conexión.</string>
+    <string name="settings_phone_type_title">Tipo de telefono</string>
+    <string name="settings_phone_type_option_auto">Automatico</string>
+    <string name="settings_phone_type_option_carplay">Solo CarPlay</string>
+    <string name="settings_phone_type_option_android">Solo Android (experimental)</string>
+    <string name="settings_phone_type_hint">Automatico atiende al telefono que se conecte. El modo Android es experimental y aun no forma parte de esta version: un telefono Android se reconoce pero no inicia nada.</string>
+    <string name="settings_phone_type_android_unavailable">El modo Android aun no forma parte de esta version.</string>
+    <string name="settings_usb_debugging_required_title">Activa la depuracion USB</string>
+    <string name="settings_usb_debugging_required_message">El modo Android llega al telefono a traves de esta unidad, asi que la depuracion USB debe estar activa. Activala en Opciones de desarrollador y vuelve a conectar el telefono.</string>
+    <string name="settings_usb_debugging_open_settings">Abrir opciones de desarrollador</string>
 </resources>

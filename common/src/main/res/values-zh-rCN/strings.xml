@@ -803,4 +803,13 @@
     <string name="settings_legacy_hotspot_description">在下次连接或打开 DiPlay 时，自动关闭 Wi-Fi 并开启已保存的车机热点。保持热点名称与密码不变。如需开机自动启动，请同时开启“车机启动后打开”。在此车机上无需 ADB 授权。</string>
     <string name="settings_media_focus_exclusive">媒体音频焦点独占</string>
     <string name="settings_media_focus_exclusive_description">媒体改请求永久焦点，不再让其他播放器压低 CarPlay。只对会把 CarPlay 压到无声的车机有效；可能导致其他播放器无声。下次连接生效。</string>
+    <string name="settings_phone_type_title">手机类型</string>
+    <string name="settings_phone_type_option_auto">自动</string>
+    <string name="settings_phone_type_option_carplay">仅 CarPlay</string>
+    <string name="settings_phone_type_option_android">仅安卓（实验性）</string>
+    <string name="settings_phone_type_hint">自动按插入的手机选择。安卓模式是实验性功能，本版本尚未包含，插入安卓手机只会被识别，不会启动投屏。</string>
+    <string name="settings_phone_type_android_unavailable">本版本尚未包含安卓模式。</string>
+    <string name="settings_usb_debugging_required_title">开启 USB 调试</string>
+    <string name="settings_usb_debugging_required_message">安卓模式需要通过车机访问手机，所以要开启 USB 调试。请在“开发者选项”中开启后重新插入手机。</string>
+    <string name="settings_usb_debugging_open_settings">打开开发者选项</string>
 </resources>

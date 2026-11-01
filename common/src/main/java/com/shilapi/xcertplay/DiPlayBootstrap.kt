@@ -6,6 +6,7 @@ import android.util.Log
 import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.airplay.AirPlayIdentity
 import com.shilapi.xcertplay.mfi.LocalMfiAuthenticationClient
+import com.shilapi.xcertplay.mirroring.PhoneTypePreference
 import com.shilapi.xcertplay.orchestration.MfiTarget
 import java.io.File
 import java.security.MessageDigest
@@ -182,5 +183,10 @@ internal object DiPlayPreferences {
     fun autoConnect(context: Context) = prefs(context).getBoolean("auto_connect", false)
     fun saveAutoConnect(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean("auto_connect", value).apply()
+    }
+    fun phoneType(context: Context) =
+        PhoneTypePreference.fromKey(prefs(context).getString("phone_type", null))
+    fun savePhoneType(context: Context, type: PhoneTypePreference) {
+        prefs(context).edit().putString("phone_type", type.key).apply()
     }
 }

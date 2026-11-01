@@ -54,6 +54,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.widget.CompoundButtonCompat
 import android.widget.TextView
@@ -105,7 +106,8 @@ import com.shilapi.xcertplay.settings.SettingsWidgets
 import com.shilapi.xcertplay.transport.Iap2IdentificationConfig
 import com.shilapi.xcertplay.transport.Iap2LocationProvider
 import com.shilapi.xcertplay.util.safeStackTrace
-import com.shilapi.xcertplay.transport.IphoneUsbMatcher
+import com.shilapi.xcertplay.mirroring.MirrorDecision
+import com.shilapi.xcertplay.mirroring.PhoneTypePreference
 import com.shilapi.xcertplay.transport.UsbDeviceId
 import com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider
 import java.io.File
@@ -1162,8 +1164,8 @@ class CarPlayHostActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (isIphoneUsbAttachment(intent)) {
-            if (wirelessEnabled) {
+        when (mirrorAttachment(intent)) {
+            MirrorDecision.START_CARPLAY -> if (wirelessEnabled) {
                 if (menuOpen) cancelSettingsEdits()
                 AirPlayPersistence.saveWirelessEnabled(this, false)
                 wirelessEnabled = false
@@ -1175,14 +1177,33 @@ class CarPlayHostActivity : ComponentActivity() {
             } else if (controller == null) {
                 requestStartupPrerequisites()
             }
+            // An Android phone is recognised by the classifier, but this build has no Android Auto
+            // receiver to hand it to. Nothing starts; CarPlay keeps working as before.
+            MirrorDecision.ANDROID_RECEIVER_MISSING,
+            MirrorDecision.START_ANDROID_AUTO,
+            -> onAndroidPhoneAttached()
+            MirrorDecision.IGNORE_BY_SETTING -> appendLog("USB device ignored by the phone type setting")
+            MirrorDecision.IGNORE_NOT_A_PHONE, null -> Unit
         }
     }
 
-    private fun isIphoneUsbAttachment(intent: Intent): Boolean {
-        if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return false
+    /** What DiPlay should do with a USB attach broadcast; null when the intent is not an attach. */
+    private fun mirrorAttachment(intent: Intent): MirrorDecision? {
+        if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return null
         val device = androidx.core.content.IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-        return device?.vendorId == IphoneUsbMatcher.APPLE_VENDOR_ID
+            ?: return null
+        return MirrorUsbAttach.decision(this, device)
     }
+
+    private fun onAndroidPhoneAttached() {
+        appendLog("Android phone attached; this build has no Android Auto receiver yet")
+        if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
+        Toast.makeText(this, getString(R.string.settings_phone_type_android_unavailable), Toast.LENGTH_LONG).show()
+        if (AskEnableUsbDebugging.needed(this)) AskEnableUsbDebugging.show(this)
+    }
+
+    private fun isIphoneUsbAttachment(intent: Intent): Boolean =
+        mirrorAttachment(intent) == MirrorDecision.START_CARPLAY
 
     override fun onStart() {
         super.onStart()

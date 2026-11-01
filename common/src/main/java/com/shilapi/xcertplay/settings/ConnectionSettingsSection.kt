@@ -3,10 +3,26 @@ package com.shilapi.xcertplay.settings
 import android.content.Context
 import android.os.Build
 import com.shilapi.xcertplay.host.R
+import com.shilapi.xcertplay.mirroring.PhoneTypePreference
 import com.shilapi.xcertplay.orchestration.MfiTarget
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
 
 object ConnectionSettingsSection {
+
+    /**
+     * "Phone type" options in [PhoneTypePreference] order, so the selected index maps straight
+     * back onto the enum. Android mode is marked experimental wherever it is offered.
+     */
+    fun phoneTypeOptions(context: Context): List<String> = PhoneTypePreference.entries.map {
+        context.getString(
+            when (it) {
+                PhoneTypePreference.AUTO -> R.string.settings_phone_type_option_auto
+                PhoneTypePreference.CARPLAY_ONLY -> R.string.settings_phone_type_option_carplay
+                PhoneTypePreference.ANDROID_ONLY -> R.string.settings_phone_type_option_android
+            },
+        )
+    }
+
 
     fun createMfiTargetChoice(
         context: Context,

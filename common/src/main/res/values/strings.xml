@@ -840,4 +840,13 @@
     <string name="settings_legacy_hotspot_description">On the next connection or when DiPlay opens, turn off regular Wi-Fi and start the saved car hotspot. Keep its name and password. For boot startup, also enable “Open after the car starts”. No ADB authorization is needed on this unit.</string>
     <string name="settings_media_focus_exclusive">Exclusive media audio focus</string>
     <string name="settings_media_focus_exclusive_description">Request permanent focus for media instead of letting other players duck CarPlay. Only helps head units that duck CarPlay to silence; it can mute other players. Takes effect on the next connection.</string>
+    <string name="settings_phone_type_title">Phone type</string>
+    <string name="settings_phone_type_option_auto">Automatic</string>
+    <string name="settings_phone_type_option_carplay">CarPlay only</string>
+    <string name="settings_phone_type_option_android">Android only (experimental)</string>
+    <string name="settings_phone_type_hint">Automatic serves whichever phone is plugged in. Android mode is experimental and not part of this build yet, so an Android phone is recognised but starts nothing.</string>
+    <string name="settings_phone_type_android_unavailable">Android mode is not part of this build yet.</string>
+    <string name="settings_usb_debugging_required_title">Turn on USB debugging</string>
+    <string name="settings_usb_debugging_required_message">Android mode reaches the phone through this head unit, so USB debugging has to be on. Turn it on in Developer options, then plug the phone in again.</string>
+    <string name="settings_usb_debugging_open_settings">Open Developer options</string>
 </resources>

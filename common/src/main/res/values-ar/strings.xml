@@ -726,4 +726,13 @@
     <string name="wireless_forget_device_title">تعذّر الاتصال اللاسلكي</string>
     <string name="wireless_forget_device_message">تعذّر اتصال CarPlay اللاسلكي 4 مرات متتالية. على iPhone، انتقل إلى «الإعدادات → Wi-Fi»، ثم تجاهل نقطة اتصال وحدة السيارة وأعد الاقتران والاتصال.</string>
     <string name="settings_media_focus_exclusive_description">طلب تركيز دائم للوسائط بدلاً من السماح للمشغلات الأخرى بخفض صوت CarPlay. يساعد فقط على الوحدات التي تخفض CarPlay إلى الصمت؛ وقد يكتم المشغلات الأخرى. يسري اعتباراً من الاتصال التالي.</string>
+    <string name="settings_phone_type_title">نوع الهاتف</string>
+    <string name="settings_phone_type_option_auto">تلقائي</string>
+    <string name="settings_phone_type_option_carplay">CarPlay فقط</string>
+    <string name="settings_phone_type_option_android">أندرويد فقط (تجريبي)</string>
+    <string name="settings_phone_type_hint">يخدم الوضع التلقائي الهاتف الموصول. وضع أندرويد تجريبي وليس جزءا من هذا الإصدار بعد، لذا يتم التعرف على هاتف أندرويد دون تشغيل أي شيء.</string>
+    <string name="settings_phone_type_android_unavailable">وضع أندرويد ليس جزءا من هذا الإصدار بعد.</string>
+    <string name="settings_usb_debugging_required_title">شغّل تصحيح USB</string>
+    <string name="settings_usb_debugging_required_message">يصل وضع أندرويد إلى الهاتف عبر هذه الوحدة، لذلك يجب تشغيل تصحيح USB. شغّله من خيارات المطور ثم أعد توصيل الهاتف.</string>
+    <string name="settings_usb_debugging_open_settings">فتح خيارات المطور</string>
 </resources>

@@ -726,4 +726,13 @@
     <string name="wireless_forget_device_title">Беспроводное подключение не удаётся</string>
     <string name="wireless_forget_device_message">Беспроводной CarPlay не смог подключиться 4 раза подряд. На iPhone откройте «Настройки → Wi-Fi», забудьте точку доступа головного устройства и выполните сопряжение заново.</string>
     <string name="settings_media_focus_exclusive_description">Запрашивать постоянный фокус для медиа вместо приглушения CarPlay другими проигрывателями. Помогает только на головных устройствах, которые приглушают CarPlay до тишины; может заглушить другие проигрыватели. Действует со следующего подключения.</string>
+    <string name="settings_phone_type_title">Тип телефона</string>
+    <string name="settings_phone_type_option_auto">Автоматически</string>
+    <string name="settings_phone_type_option_carplay">Только CarPlay</string>
+    <string name="settings_phone_type_option_android">Только Android (экспериментально)</string>
+    <string name="settings_phone_type_hint">Автоматически обслуживается тот телефон, который подключён. Режим Android экспериментальный и пока не входит в эту сборку: телефон Android распознаётся, но ничего не запускает.</string>
+    <string name="settings_phone_type_android_unavailable">Режим Android пока не входит в эту сборку.</string>
+    <string name="settings_usb_debugging_required_title">Включите отладку по USB</string>
+    <string name="settings_usb_debugging_required_message">Режим Android обращается к телефону через это головное устройство, поэтому отладка по USB должна быть включена. Включите её в параметрах разработчика и подключите телефон заново.</string>
+    <string name="settings_usb_debugging_open_settings">Открыть параметры разработчика</string>
 </resources>
