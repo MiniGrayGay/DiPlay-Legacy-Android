@@ -140,6 +140,21 @@
             android:exported="false"
             android:theme="@style/Theme.Xcertplay" />
 
+        <!-- Android mode: the head unit receives, the test phone sends. Both are experimental and
+             stay internal to the app; nothing outside can start a projection. -->
+        <activity
+            android:name="com.shilapi.xcertplay.aa.AaReceiverActivity"
+            android:configChanges="density|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.Xcertplay" />
+
+        <activity
+            android:name="com.shilapi.xcertplay.aa.AaSenderActivity"
+            android:configChanges="density|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:theme="@style/Theme.Xcertplay" />
+
         <activity
             android:name="com.shilapi.xcertplay.MainActivity"
             android:exported="false"

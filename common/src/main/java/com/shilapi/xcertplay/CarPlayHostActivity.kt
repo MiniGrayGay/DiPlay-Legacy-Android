@@ -1177,11 +1177,10 @@ class CarPlayHostActivity : ComponentActivity() {
             } else if (controller == null) {
                 requestStartupPrerequisites()
             }
-            // An Android phone is recognised by the classifier, but this build has no Android Auto
-            // receiver to hand it to. Nothing starts; CarPlay keeps working as before.
-            MirrorDecision.ANDROID_RECEIVER_MISSING,
-            MirrorDecision.START_ANDROID_AUTO,
-            -> onAndroidPhoneAttached()
+            // An Android phone now has somewhere to go: the experimental receiver in the `aa`
+            // package. Without it the attach is logged and CarPlay keeps working as before.
+            MirrorDecision.START_ANDROID_AUTO -> onAndroidPhoneAttached(startReceiver = true)
+            MirrorDecision.ANDROID_RECEIVER_MISSING -> onAndroidPhoneAttached(startReceiver = false)
             MirrorDecision.IGNORE_BY_SETTING -> appendLog("USB device ignored by the phone type setting")
             MirrorDecision.IGNORE_NOT_A_PHONE, null -> Unit
         }
@@ -1195,11 +1194,19 @@ class CarPlayHostActivity : ComponentActivity() {
         return MirrorUsbAttach.decision(this, device)
     }
 
-    private fun onAndroidPhoneAttached() {
-        appendLog("Android phone attached; this build has no Android Auto receiver yet")
-        if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
-        Toast.makeText(this, getString(R.string.settings_phone_type_android_unavailable), Toast.LENGTH_LONG).show()
+    private fun onAndroidPhoneAttached(startReceiver: Boolean) {
+        if (!startReceiver) {
+            appendLog("Android phone attached; this build has no Android Auto receiver yet")
+            if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
+            Toast.makeText(this, getString(R.string.settings_phone_type_android_unavailable), Toast.LENGTH_LONG).show()
+            if (AskEnableUsbDebugging.needed(this)) AskEnableUsbDebugging.show(this)
+            return
+        }
+        appendLog("Android phone attached; starting the Android mode receiver")
+        // The stream itself arrives over the phone's own transport, which needs USB debugging on
+        // today's hardware. Ask first, then open the receiver so it is already waiting.
         if (AskEnableUsbDebugging.needed(this)) AskEnableUsbDebugging.show(this)
+        startActivity(com.shilapi.xcertplay.aa.AaReceiverActivity.intent(this))
     }
 
     private fun isIphoneUsbAttachment(intent: Intent): Boolean =

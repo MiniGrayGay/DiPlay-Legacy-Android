@@ -730,9 +730,20 @@
     <string name="settings_phone_type_option_auto">تلقائي</string>
     <string name="settings_phone_type_option_carplay">CarPlay فقط</string>
     <string name="settings_phone_type_option_android">أندرويد فقط (تجريبي)</string>
-    <string name="settings_phone_type_hint">يخدم الوضع التلقائي الهاتف الموصول. وضع أندرويد تجريبي وليس جزءا من هذا الإصدار بعد، لذا يتم التعرف على هاتف أندرويد دون تشغيل أي شيء.</string>
+        <string name="settings_phone_type_hint">الوضع التلقائي يخدم الهاتف الموصول. الوضع الآلي تجريبي: المستقبل موجود في هذا الإصدار ويمكن تشغيله من هذه البطاقة، لكن الهاتف الحقيقي يحتاج إلى تفعيل تصحيح USB.</string>
     <string name="settings_phone_type_android_unavailable">وضع أندرويد ليس جزءا من هذا الإصدار بعد.</string>
     <string name="settings_usb_debugging_required_title">شغّل تصحيح USB</string>
     <string name="settings_usb_debugging_required_message">يصل وضع أندرويد إلى الهاتف عبر هذه الوحدة، لذلك يجب تشغيل تصحيح USB. شغّله من خيارات المطور ثم أعد توصيل الهاتف.</string>
     <string name="settings_usb_debugging_open_settings">فتح خيارات المطور</string>
+    <string name="aa_receiver_button">مستقبل الوضع الآلي (تجريبي)</string>
+    <string name="aa_receiver_address_button">عنوان الهاتف · %1$s</string>
+    <string name="aa_receiver_address_title">عنوان الهاتف للوضع الآلي</string>
+    <string name="aa_receiver_address_hint">host:port للهاتف الذي يبث الصورة</string>
+    <string name="aa_sender_button">مرسل الوضع الآلي (هاتف اختبار)</string>
+    <string name="aa_receiver_waiting">في انتظار مرسل الهاتف على %1$s</string>
+    <string name="aa_receiver_retrying">انقطع الاتصال: %1$s · إعادة المحاولة</string>
+    <string name="aa_sender_title">الوضع الآلي · المرسل</string>
+    <string name="aa_sender_waiting">في انتظار السيارة على المنفذ %1$d</string>
+    <string name="aa_sender_streaming">جارٍ البث إلى السيارة</string>
+    <string name="aa_mode_needs_api">يتطلب الوضع الآلي Android 5.0 أو أحدث</string>
 </resources>

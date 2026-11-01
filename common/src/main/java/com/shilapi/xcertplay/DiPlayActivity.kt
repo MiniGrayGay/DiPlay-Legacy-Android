@@ -68,6 +68,9 @@ import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotTethering
 import com.shilapi.xcertplay.network.WifiP2pChannels
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
+import com.shilapi.xcertplay.aa.AaPreferences
+import com.shilapi.xcertplay.aa.AaReceiverActivity
+import com.shilapi.xcertplay.aa.AaSenderActivity
 import com.shilapi.xcertplay.mirroring.PhoneTypePreference
 import com.shilapi.xcertplay.settings.ConnectionSettingsSection
 import com.shilapi.xcertplay.settings.SettingsTheme
@@ -1335,11 +1338,36 @@ class DiPlayActivity : ComponentActivity() {
             card.addView(label(getString(R.string.settings_phone_type_hint), 14, MUTED).apply {
                 setPadding(0, dp(4), 0, 0)
             })
+            // Android mode is experimental and, until the USB accessory path exists, started by hand.
+            // The address is the phone that will send the picture; on a workstation pair it is the
+            // adb-forwarded port of the sender emulator.
+            if (Build.VERSION.SDK_INT >= 21) {
+                card.addView(button(getString(R.string.aa_receiver_button), false) {
+                    startActivity(AaReceiverActivity.intent(this@DiPlayActivity))
+                }, matchButton(12, 60))
+                card.addView(button(
+                    getString(
+                        R.string.aa_receiver_address_button,
+                        "${AaPreferences.receiverHost(this@DiPlayActivity)}:${AaPreferences.receiverPort(this@DiPlayActivity)}",
+                    ),
+                    false,
+                ) { promptAaReceiverAddress() }, matchButton(12, 60))
+            } else {
+                card.addView(label(getString(R.string.aa_mode_needs_api), 14, MUTED).apply {
+                    setPadding(0, dp(4), 0, 0)
+                })
+            }
         }
         filteredSection(content, SettingsSection.USB_BLUETOOTH,
             getString(R.string.settings_usb_bluetooth_title), R.drawable.ic_dp_connection, ::usbBluetoothSettings)
         filteredSection(content, SettingsSection.DIAGNOSTICS,
             getString(R.string.diagnostics), R.drawable.ic_dp_diagnostics) { card ->
+            // Android mode's phone half, for checking the receiver without a real Android phone.
+            if (Build.VERSION.SDK_INT >= 21) {
+                card.addView(button(getString(R.string.aa_sender_button), false) {
+                    startActivity(AaSenderActivity.intent(this@DiPlayActivity))
+                }, matchButton(12, 60))
+            }
             // 查看日志按钮：在保存按钮上方，点击直接展示日志（无需先保存）。
             // 低配置车机生成报告会卡顿，按钮显示 loading 状态避免"卡死"错觉。
             val viewLogButton = button(getString(R.string.view_log), false) {}
@@ -4491,6 +4519,42 @@ class DiPlayActivity : ComponentActivity() {
             }
         }
         dialog.show()
+    }
+
+    /**
+     * Address of the phone that sends the picture in Android mode. Accepts `host` or `host:port`
+     * so a driver typing a LAN address does not have to remember the port.
+     */
+    private fun promptAaReceiverAddress() {
+        val current = "${AaPreferences.receiverHost(this)}:${AaPreferences.receiverPort(this)}"
+        val input = EditText(this).apply {
+            hint = "${AaPreferences.DEFAULT_HOST}:${AaPreferences.DEFAULT_PORT}"
+            setText(current)
+            setSingleLine()
+            setSelection(text.length)
+        }
+        val dialogView = column().apply {
+            setPadding(dp(24), dp(12), dp(24), dp(12))
+            addView(label(getString(R.string.aa_receiver_address_hint), 14, MUTED))
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.aa_receiver_address_title))
+            .setView(dialogView)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val parts = input.text.toString().trim().split(':')
+                val address = parts.getOrNull(0)?.trim().orEmpty()
+                val port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: AaPreferences.receiverPort(this)
+                if (address.isNotEmpty() && port in 1..65535) {
+                    AaPreferences.saveReceiverHost(this, address)
+                    AaPreferences.saveReceiverPort(this, port)
+                    render()
+                } else {
+                    toast(getString(R.string.aa_receiver_address_hint))
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun promptCarBluetoothMac() {

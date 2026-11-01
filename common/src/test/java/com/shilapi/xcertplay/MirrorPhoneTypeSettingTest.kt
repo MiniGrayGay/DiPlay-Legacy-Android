@@ -54,9 +54,18 @@ class MirrorPhoneTypeSettingTest {
     @Test fun androidOnlyStopsAnIphoneFromStartingCarPlay() {
         DiPlayPreferences.savePhoneType(context, PhoneTypePreference.ANDROID_ONLY)
         assertEquals(MirrorDecision.IGNORE_BY_SETTING, MirrorUsbAttach.decision(context, device(IPHONE_VENDOR_ID)))
-        // This build has no `:autoreceiver` module, so an Android phone is recognised but idle.
+        // The experimental receiver ships in this build, so the Android phone is handed to it
+        // instead of being recognised and left idle.
         assertEquals(
-            MirrorDecision.ANDROID_RECEIVER_MISSING,
+            MirrorDecision.START_ANDROID_AUTO,
+            MirrorUsbAttach.decision(context, device(ANDROID_VENDOR_ID)),
+        )
+    }
+
+    @Test fun automaticAlsoServesAnAndroidPhoneNowThatTheReceiverExists() {
+        assertEquals(PhoneTypePreference.AUTO, DiPlayPreferences.phoneType(context))
+        assertEquals(
+            MirrorDecision.START_ANDROID_AUTO,
             MirrorUsbAttach.decision(context, device(ANDROID_VENDOR_ID)),
         )
     }

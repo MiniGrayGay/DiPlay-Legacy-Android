@@ -730,9 +730,20 @@
     <string name="settings_phone_type_option_auto">Автоматически</string>
     <string name="settings_phone_type_option_carplay">Только CarPlay</string>
     <string name="settings_phone_type_option_android">Только Android (экспериментально)</string>
-    <string name="settings_phone_type_hint">Автоматически обслуживается тот телефон, который подключён. Режим Android экспериментальный и пока не входит в эту сборку: телефон Android распознаётся, но ничего не запускает.</string>
+        <string name="settings_phone_type_hint">Автоматический режим обслуживает подключённый телефон. Android-режим экспериментальный: приёмник уже в этой сборке и запускается с этой карточки, но реальному телефону нужна включённая отладка по USB.</string>
     <string name="settings_phone_type_android_unavailable">Режим Android пока не входит в эту сборку.</string>
     <string name="settings_usb_debugging_required_title">Включите отладку по USB</string>
     <string name="settings_usb_debugging_required_message">Режим Android обращается к телефону через это головное устройство, поэтому отладка по USB должна быть включена. Включите её в параметрах разработчика и подключите телефон заново.</string>
     <string name="settings_usb_debugging_open_settings">Открыть параметры разработчика</string>
+    <string name="aa_receiver_button">Приёмник Android-режима (экспериментально)</string>
+    <string name="aa_receiver_address_button">Адрес телефона · %1$s</string>
+    <string name="aa_receiver_address_title">Адрес телефона для Android-режима</string>
+    <string name="aa_receiver_address_hint">host:port телефона, который передаёт изображение</string>
+    <string name="aa_sender_button">Передатчик Android-режима (тестовый телефон)</string>
+    <string name="aa_receiver_waiting">Ожидание передатчика на %1$s</string>
+    <string name="aa_receiver_retrying">Соединение потеряно: %1$s · повтор</string>
+    <string name="aa_sender_title">Android-режим · передатчик</string>
+    <string name="aa_sender_waiting">Ожидание автомобиля на порту %1$d</string>
+    <string name="aa_sender_streaming">Передача в автомобиль</string>
+    <string name="aa_mode_needs_api">Android-режиму нужен Android 5.0 или новее</string>
 </resources>

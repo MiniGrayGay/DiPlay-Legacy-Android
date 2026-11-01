@@ -17,11 +17,12 @@ import com.shilapi.xcertplay.mirroring.UsbInterfaceIdentity
  */
 internal object MirrorUsbAttach {
     /**
-     * The "Android Auto receiver" the selector asks about is the `:autoreceiver` module from M3.
-     * It does not exist yet, so DiPlay can recognise an Android phone but cannot serve it; the
-     * attach path reports [MirrorDecision.ANDROID_RECEIVER_MISSING] instead of starting anything.
+     * True since the experimental Android mode receiver landed in `common/.../aa`: the selector may
+     * now hand an Android phone to [com.shilapi.xcertplay.aa.AaReceiverActivity] instead of reporting
+     * that nothing can serve it. The USB accessory handshake itself still needs real hardware, so the
+     * receiver is started and then waits for the phone's stream.
      */
-    const val ANDROID_RECEIVER_AVAILABLE = false
+    const val ANDROID_RECEIVER_AVAILABLE = true
 
     fun identity(device: UsbDevice): UsbDeviceIdentity = UsbDeviceIdentity(
         vendorId = device.vendorId,

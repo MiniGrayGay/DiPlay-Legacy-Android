@@ -4,4 +4,8 @@
     <application android:label="DiPlay HUD Test" tools:replace="android:label">
     <receiver android:name="com.shilapi.xcertplay.hud.StarterBridgeReceiver" android:exported="true" android:permission="android.permission.DUMP" />
     <activity android:name="com.shilapi.xcertplay.hud.StandaloneHudDemoActivity" android:exported="true" android:permission="android.permission.DUMP" />
+    <!-- Android mode loopback pair: exported in debug builds only so a workstation can drive both
+         ends with `am start` instead of tapping through Settings on every run. -->
+    <activity android:name="com.shilapi.xcertplay.aa.AaReceiverActivity" android:exported="true" tools:replace="android:exported" />
+    <activity android:name="com.shilapi.xcertplay.aa.AaSenderActivity" android:exported="true" tools:replace="android:exported" />
     </application></manifest>

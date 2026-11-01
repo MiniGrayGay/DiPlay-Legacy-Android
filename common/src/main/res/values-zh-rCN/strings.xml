@@ -807,9 +807,20 @@
     <string name="settings_phone_type_option_auto">自动</string>
     <string name="settings_phone_type_option_carplay">仅 CarPlay</string>
     <string name="settings_phone_type_option_android">仅安卓（实验性）</string>
-    <string name="settings_phone_type_hint">自动按插入的手机选择。安卓模式是实验性功能，本版本尚未包含，插入安卓手机只会被识别，不会启动投屏。</string>
+        <string name="settings_phone_type_hint">自动模式会服务插入的那部手机。安卓模式为实验性：本版本已包含接收端，可直接从本卡片启动；真机连接仍需打开 USB 调试。</string>
     <string name="settings_phone_type_android_unavailable">本版本尚未包含安卓模式。</string>
     <string name="settings_usb_debugging_required_title">开启 USB 调试</string>
     <string name="settings_usb_debugging_required_message">安卓模式需要通过车机访问手机，所以要开启 USB 调试。请在“开发者选项”中开启后重新插入手机。</string>
     <string name="settings_usb_debugging_open_settings">打开开发者选项</string>
+    <string name="aa_receiver_button">安卓模式接收端（实验性）</string>
+    <string name="aa_receiver_address_button">手机地址 · %1$s</string>
+    <string name="aa_receiver_address_title">安卓模式的手机地址</string>
+    <string name="aa_receiver_address_hint">发送画面那台手机的 host:port</string>
+    <string name="aa_sender_button">安卓模式发送端（测试手机）</string>
+    <string name="aa_receiver_waiting">正在等待手机发送端 %1$s</string>
+    <string name="aa_receiver_retrying">已断开：%1$s · 正在重试</string>
+    <string name="aa_sender_title">安卓模式 · 发送端</string>
+    <string name="aa_sender_waiting">正在端口 %1$d 等待车机连接</string>
+    <string name="aa_sender_streaming">正在向车机推流</string>
+    <string name="aa_mode_needs_api">安卓模式需要 Android 5.0 及以上</string>
 </resources>

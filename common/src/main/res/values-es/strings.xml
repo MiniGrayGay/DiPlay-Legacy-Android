@@ -730,9 +730,20 @@
     <string name="settings_phone_type_option_auto">Automatico</string>
     <string name="settings_phone_type_option_carplay">Solo CarPlay</string>
     <string name="settings_phone_type_option_android">Solo Android (experimental)</string>
-    <string name="settings_phone_type_hint">Automatico atiende al telefono que se conecte. El modo Android es experimental y aun no forma parte de esta version: un telefono Android se reconoce pero no inicia nada.</string>
+        <string name="settings_phone_type_hint">El modo automático atiende al teléfono conectado. El modo Android es experimental: el receptor ya está en esta compilación y se inicia desde esta tarjeta, pero un teléfono real necesita la depuración USB activada.</string>
     <string name="settings_phone_type_android_unavailable">El modo Android aun no forma parte de esta version.</string>
     <string name="settings_usb_debugging_required_title">Activa la depuracion USB</string>
     <string name="settings_usb_debugging_required_message">El modo Android llega al telefono a traves de esta unidad, asi que la depuracion USB debe estar activa. Activala en Opciones de desarrollador y vuelve a conectar el telefono.</string>
     <string name="settings_usb_debugging_open_settings">Abrir opciones de desarrollador</string>
+    <string name="aa_receiver_button">Receptor de modo Android (experimental)</string>
+    <string name="aa_receiver_address_button">Dirección del teléfono · %1$s</string>
+    <string name="aa_receiver_address_title">Dirección del teléfono para el modo Android</string>
+    <string name="aa_receiver_address_hint">host:port del teléfono que envía la imagen</string>
+    <string name="aa_sender_button">Emisor de modo Android (teléfono de prueba)</string>
+    <string name="aa_receiver_waiting">Esperando al emisor en %1$s</string>
+    <string name="aa_receiver_retrying">Desconectado: %1$s · reintentando</string>
+    <string name="aa_sender_title">Modo Android · emisor</string>
+    <string name="aa_sender_waiting">Esperando al coche en el puerto %1$d</string>
+    <string name="aa_sender_streaming">Transmitiendo al coche</string>
+    <string name="aa_mode_needs_api">El modo Android requiere Android 5.0 o superior</string>
 </resources>
