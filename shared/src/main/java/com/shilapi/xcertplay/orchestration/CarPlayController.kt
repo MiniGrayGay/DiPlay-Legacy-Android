@@ -222,6 +222,7 @@ class CarPlayController(
     private val hostId = UUID.randomUUID().toString().uppercase(Locale.US)
     private val systemBuid = UUID.randomUUID().toString().uppercase(Locale.US)
     private val lifecycleLock = Any()
+    @Volatile private var renderedSession: AirPlaySession? = null
     @Volatile private var uiListener: AirPlaySessionListener? = listener
     @Volatile private var uiStatusReporter: ((CarPlayStatus) -> Unit)? = reportStatus
     private val permissionGrant = AtomicBoolean(false)
@@ -354,7 +355,13 @@ class CarPlayController(
     private val sessionListener = object : AirPlaySessionListener {
         override fun onSessionActive(session: AirPlaySession) {
             if (closed || (config.transport == CarPlayTransport.WIRED && wiredAborted)) return
-            val replacement = activeSession !== session
+            val replacement = synchronized(lifecycleLock) {
+                if (closed || (config.transport == CarPlayTransport.WIRED && wiredAborted)) return
+                (activeSession !== session).also {
+                    if (it) renderedSession = null
+                    activeSession = session
+                }
+            }
             if (replacement) {
                 BydNavigationOutputs.start(appContext)
                 BydNavigationOutputs.carPlaySessionStarted()
@@ -365,7 +372,6 @@ class CarPlayController(
                     debugLog("video in car session allowed=${VideoInCar.allowed} delivery=$delivery")
                 }
             }
-            activeSession = session
             if (replacement) restoreDashboardContent(session)
             // Issue #95: wired first-TCP watchdog 鈥?a session only becomes active after the
             // iPhone opened the AirPlay TCP connection and completed the handshake.
@@ -405,22 +411,34 @@ class CarPlayController(
             uiListener?.onSessionActive(session)
         }
 
+        override fun onVideoFrameRendered(session: AirPlaySession) {
+            val firstFrame = synchronized(lifecycleLock) {
+                if (closed || activeSession !== session || renderedSession === session) false
+                else {
+                    renderedSession = session
+                    true
+                }
+            }
+            if (firstFrame) uiListener?.onVideoFrameRendered(session)
+        }
+
         override fun onSessionEnded(session: AirPlaySession) {
             // A closing reader can report its end after a replacement session
             // is active. It must not clear that session's UI or playback state.
-            if (activeSession !== session) return
-            if (activeSession === session) {
+            synchronized(lifecycleLock) {
+                if (activeSession !== session) return
+                renderedSession = null
                 activeSession = null
-                BydNavigationOutputs.endNow(preserveTurnOverlay = !closed && config.transport == CarPlayTransport.WIRELESS)
-                com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
-                videoListener?.onVideoSessionEnded()
-                synchronized(playbackStatus) {
-                    val wasPlaying = playbackStatus.playing
-                    playbackStatus.clearAll()?.let { it to wasPlaying }
-                }?.let { (cleared, wasPlaying) ->
-                    nowPlayingListener?.invoke(cleared)
-                    if (wasPlaying) playbackListener?.invoke(false)
-                }
+            }
+            BydNavigationOutputs.endNow(preserveTurnOverlay = !closed && config.transport == CarPlayTransport.WIRELESS)
+            com.shilapi.xcertplay.glance.CarPlayGlance.setConnected(false)
+            videoListener?.onVideoSessionEnded()
+            synchronized(playbackStatus) {
+                val wasPlaying = playbackStatus.playing
+                playbackStatus.clearAll()?.let { it to wasPlaying }
+            }?.let { (cleared, wasPlaying) ->
+                nowPlayingListener?.invoke(cleared)
+                if (wasPlaying) playbackListener?.invoke(false)
             }
             debugLog("AirPlay session ended peer=${session.host}")
             uiListener?.onSessionEnded(session)
@@ -593,11 +611,24 @@ class CarPlayController(
         uiListener = listener
         uiStatusReporter = reportStatus
         mainHandler.post {
-            if (uiListener === listener) lastReportedStatus?.let(reportStatus)
+            if (uiListener === listener) {
+                lastReportedStatus?.let(reportStatus)
+                if (!closed && uiListener === listener) activeSession?.let { session ->
+                    listener.onSessionActive(session)
+                    if (!closed && uiListener === listener && activeSession === session && renderedSession === session) {
+                        listener.onVideoFrameRendered(session)
+                    }
+                }
+            }
         }
     }
 
     fun isClosed(): Boolean = closed
+
+    /** Historical main-picture evidence for the current session, not proof of a newly attached output. */
+    fun hasRenderedMainPicture(): Boolean = synchronized(lifecycleLock) {
+        !closed && activeSession?.let { renderedSession === it } == true
+    }
 
     /** Nonblocking identity for wheel controls: only an unclosed phone with an accepted primary stream. */
     fun activeAirPlaySessionToken(): Any? {
@@ -2188,7 +2219,7 @@ class CarPlayController(
                         true
                     }
                 }
-                if (firstFrame) uiListener?.onVideoFrameRendered(session)
+                if (firstFrame) sessionListener.onVideoFrameRendered(session)
             }
 
             override fun onDebugLog(message: String) {
