@@ -54,6 +54,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.widget.CompoundButtonCompat
 import android.widget.TextView
@@ -105,7 +106,8 @@ import com.shilapi.xcertplay.settings.SettingsWidgets
 import com.shilapi.xcertplay.transport.Iap2IdentificationConfig
 import com.shilapi.xcertplay.transport.Iap2LocationProvider
 import com.shilapi.xcertplay.util.safeStackTrace
-import com.shilapi.xcertplay.transport.IphoneUsbMatcher
+import com.shilapi.xcertplay.mirroring.MirrorDecision
+import com.shilapi.xcertplay.mirroring.PhoneTypePreference
 import com.shilapi.xcertplay.transport.UsbDeviceId
 import com.shilapi.xcertplay.transport.VehicleSpeedLocationProvider
 import java.io.File
@@ -1162,8 +1164,8 @@ class CarPlayHostActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (isIphoneUsbAttachment(intent)) {
-            if (wirelessEnabled) {
+        when (mirrorAttachment(intent)) {
+            MirrorDecision.START_CARPLAY -> if (wirelessEnabled) {
                 if (menuOpen) cancelSettingsEdits()
                 AirPlayPersistence.saveWirelessEnabled(this, false)
                 wirelessEnabled = false
@@ -1175,14 +1177,50 @@ class CarPlayHostActivity : ComponentActivity() {
             } else if (controller == null) {
                 requestStartupPrerequisites()
             }
+            // An Android phone is driven through its own adbd: nothing is installed on it, and the
+            // phone-side binaries (screenrecord, input) do the work.
+            MirrorDecision.START_ANDROID_AUTO -> onAndroidPhoneAttached(attachedPhone(intent), startReceiver = true)
+            MirrorDecision.ANDROID_RECEIVER_MISSING -> onAndroidPhoneAttached(attachedPhone(intent), startReceiver = false)
+            MirrorDecision.IGNORE_BY_SETTING -> appendLog("USB device ignored by the phone type setting")
+            MirrorDecision.IGNORE_NOT_A_PHONE, null -> Unit
         }
     }
 
-    private fun isIphoneUsbAttachment(intent: Intent): Boolean {
-        if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return false
+    /** What DiPlay should do with a USB attach broadcast; null when the intent is not an attach. */
+    private fun mirrorAttachment(intent: Intent): MirrorDecision? {
+        if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return null
         val device = androidx.core.content.IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-        return device?.vendorId == IphoneUsbMatcher.APPLE_VENDOR_ID
+            ?: return null
+        return MirrorUsbAttach.decision(this, device)
     }
+
+    private fun onAndroidPhoneAttached(device: UsbDevice?, startReceiver: Boolean) {
+        if (!startReceiver) {
+            appendLog("Android phone attached; this build has no Android Auto receiver yet")
+            if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
+            Toast.makeText(this, getString(R.string.settings_phone_type_android_unavailable), Toast.LENGTH_LONG).show()
+            return
+        }
+        if (device == null) return
+        // The phone exposes its ADB interface only while USB debugging is on. That interface is the
+        // entire transport, so its absence is the one thing the driver has to fix — and the hint has
+        // to be about the phone, not about this head unit's own debugging switch.
+        if (com.shilapi.xcertplay.adb.UsbAdbTransport.adbInterfaceIndex(device) < 0) {
+            appendLog("Android phone attached without an ADB interface; USB debugging is off")
+            if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
+            Toast.makeText(this, getString(R.string.settings_usb_debugging_required_message), Toast.LENGTH_LONG).show()
+            return
+        }
+        appendLog("Android phone attached; starting Android mode over ADB")
+        startActivity(com.shilapi.xcertplay.adb.AdbMirrorActivity.usbIntent(this, device.deviceId))
+    }
+
+    /** The attached USB device, when this intent is an attach broadcast for one. */
+    private fun attachedPhone(intent: Intent): UsbDevice? =
+        androidx.core.content.IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+
+    private fun isIphoneUsbAttachment(intent: Intent): Boolean =
+        mirrorAttachment(intent) == MirrorDecision.START_CARPLAY
 
     override fun onStart() {
         super.onStart()

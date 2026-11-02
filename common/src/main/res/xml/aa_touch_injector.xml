@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Touch injection for Android mode. `canPerformGestures` is the only capability requested: the
+  service never reads window content, so it stays out of the accessibility tree.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canPerformGestures="true"
+    android:description="@string/aa_injector_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.shilapi.xcertplay.DiPlayActivity" />

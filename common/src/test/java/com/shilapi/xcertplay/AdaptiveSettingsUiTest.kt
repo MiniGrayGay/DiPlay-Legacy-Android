@@ -380,6 +380,11 @@ class AdaptiveSettingsUiTest {
         val vehicle = visibleIn(R.string.settings_vehicle)
         val advanced = visibleIn(R.string.settings_advanced)
 
+        // The phone type decides whether a plugged-in phone starts CarPlay, so it sits with the
+        // connection setup rather than with the experimental Android switches.
+        assertTrue(connection.any { it.startsWith(text(R.string.settings_phone_type_title)) })
+        assertFalse(advanced.any { it.startsWith(text(R.string.settings_phone_type_title)) })
+
         assertTrue(audio.any { it.startsWith(text(R.string.music_buffer)) })
         // Issue #266: the direct usbfs mode is firmware-specific, so it lives under
         // Advanced, not with the regular connection setup.
