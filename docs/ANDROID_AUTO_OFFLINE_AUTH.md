@@ -138,7 +138,44 @@ AARE（开源手机侧 AA 实现）用 **TOFU（Trust On First Use）**：
 
 ---
 
-## 5. 已落地代码
+## 6. 无线链路（对齐 CarPlay 的连接方式）
+
+CarPlay 在 main 分支是这么连的：车机开热点 → 蓝牙 RFCOMM 交换凭据 → Bonjour 广播 → AirPlay over TCP。
+Android Auto 的无线模式（AAW）结构一致，只是第二、三步换成 Google 自己的 WPP 协议：
+
+```
+蓝牙配对
+   ↓  车机作 RFCOMM 服务端，SDP 发布 UUID 4de17a00-52cb-11e6-bdf4-0800200c9a66
+手机发现该 UUID，连上来
+   ↓  WPP：帧头 [u16 长度][u16 消息ID] 大端，长度不含头
+HU  → 手机   WifiVersionRequest          （可选，严格的机型要靠它放行后续）
+手机 → HU    WifiVersionResponse
+HU  → 手机   WifiStartRequest            （车机 AAP 服务的 ip + port，通常 5277）
+手机 → HU    WifiInfoRequest             （索取热点凭据）
+HU  → 手机   WifiInfoResponse            （ssid / 口令 / bssid / security_mode）
+手机加入车机热点
+手机 → HU    WifiStartResponse(7) → WifiConnectionStatus(6)   （顺序不能反）
+手机连 TCP(ip, port)  →  进入第 2.2 节的 AAP over TLS
+```
+
+四个必须照做的细节：
+
+1. **`security_mode` 是位标志**（WPA2=8、WPA3=32、WPA2/WPA3=40），不是会话内 `WifiSecurityMode`
+   枚举里的 `WPA2_PERSONAL=5`。用错手机就解析不了这条消息。
+2. **手机拒绝开放热点**。AARE 原文 "refusing an open Wi-Fi network"，所以车机热点必须是 WPA2 带口令。
+3. **手机回报顺序是先 7（StartResponse）后 6（ConnectionStatus）**，aa-proxy-rs 与 open-headunit 都按这个顺序读。
+4. **RFCOMM 链路要在整个会话期间保持**，手机每 ~2 秒 ping 一次，车机必须回声应答；不少车机 15 秒静默就断链。
+
+车机侧基础设施不需要新写——CarPlay 无线那套直接复用：`LocalOnlyHotspotManager`（支持
+`SoftApConfiguration` 指定 WPA2）、`HostapdHotspotManager`、`WirelessHotspotManager`、
+`BluetoothRfcommDuplexStream`。
+
+已实现：`shared/.../aap/AawWpp.kt`（帧与消息编解码）、`aap/AawBootstrap.kt`（车机侧状态机）。
+
+> **这一节的前提仍然是第 2.5 节的结论：手机端必须是 AARE。** 安卓没有系统级的 AA 接收端，
+> 而 Google 官方 AA 只认可 Google 签发的车机证书。无线链路本身不改变这个前提。
+
+## 7. 已落地代码
 
 `shared/src/main/java/com/shilapi/xcertplay/aap/`（纯 JVM，可单测）：
 
@@ -150,6 +187,9 @@ AARE（开源手机侧 AA 实现）用 **TOFU（Trust On First Use）**：
 | `HeadUnitCertificate.kt` | 本地生成 RSA-2048 自签 X.509 v3（手写 DER，不引入 BouncyCastle），SHA-256 指纹 |
 | `AapTlsStream.kt` | **车机作 TLS client**；握手走 `ENCAPSULATED_SSL`，之后每消息独立加密并保留通道号；不验证手机链，捕获指纹做 TOFU |
 | `AapTransport.kt` | 传输接缝（USB bulk / TCP）+ 内存回环管道 |
+| `AawWpp.kt` | 无线引导（WPP）的帧与消息编解码，见第 6 节 |
+| `AawBootstrap.kt` | 车机侧无线引导状态机；不设定时器，全部由收到的帧驱动 |
+| `../proto/ProtoWire.kt` | 手写 protobuf 读写（varint / zigzag / 长度前缀） |
 
 设计要点：
 
@@ -165,16 +205,20 @@ AARE（开源手机侧 AA 实现）用 **TOFU（Trust On First Use）**：
 
 ---
 
-## 6. 后续
+## 8. 后续
 
-1. `AapSession`：版本协商 → TLS → AuthComplete → 服务发现 → 通道打开。
-2. `UsbAccessoryTransport`（bulk 端点）与 `TcpTransport`（对 AARE 模拟器联调）。
-3. Android 侧 `AapProjectionActivity`：SurfaceView + MediaCodec + 触摸 → InputReport。
-4. 音频：MEDIA_SINK 多通道 → AudioTrack。
-5. 真机：手机装 AARE，首次点 Trust，看 `Advanced > Connection log`。
+1. `TcpTransport` + `AapSession`：接上无线引导之后的会话（版本协商 → TLS → AuthComplete → 服务发现 → 通道打开）。
+2. `UsbAccessoryTransport`（AOA bulk 端点），对齐 CarPlay 的有线路径。
+3. Android 侧 `AapProjectionActivity`：SurfaceView + MediaCodec + 触摸 → InputReport，即"互联桌面"。
+4. 蓝牙 RFCOMM 服务端（UUID 见第 6 节）与热点接线，复用 `LocalOnlyHotspotManager` / `BluetoothRfcommDuplexStream`。
+5. 音频：MEDIA_SINK 多通道 → AudioTrack。
+6. 真机：手机装 AARE，首次点 Trust，看 `Advanced > Connection log`。
 
-## 7. 未解决
+## 9. 未解决
 
-- Google 官方 AA app 无法连接自签车机，除非拿到 Google 签发的 HU 证书。这一点不受本实现影响。
-- 无线路径（Bluetooth 引导 + Wi-Fi Direct）本轮未做。
+- Google 官方 AA app 无法连接自签车机，除非拿到 Google 签发的 HU 证书。这一点不受本实现影响；
+  也正因如此，**手机端必须是 AARE**，这是整条路唯一的、绕不过去的前置条件。
+- 无线只做了引导层；TCP 会话与画面链路未做。
+- Wi-Fi Direct（P2P）未做，目前走车机自带热点（SoftAP）。
 - AARE 是早期软件，公开的真车验证仅两台；不同 OEM 车机对手机证书的检查策略差异较大。
+- 部分厂商 ROM 会限制 LocalOnlyHotspot 的安全类型，需要在真车上确认能否稳定给出 WPA2 热点。
