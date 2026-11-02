@@ -1,10 +1,10 @@
 package com.shilapi.xcertplay.aap
 
 import java.io.Closeable
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * The byte pipe under an AAP session.
@@ -68,43 +68,119 @@ fun AapTransport.outputStream(): OutputStream = object : OutputStream() {
  * Two pipes wired to each other, for tests and for the in-process simulator.
  *
  * Each side blocks when its buffer is empty, so a test reads like a real session without opening
- * a socket. Built on [PipedInputStream], the JDK's own blocking pipe: it already gets the
- * wait/notify right, and a hand-rolled ring buffer here would only add a way to get it wrong.
+ * a socket. The two ends are meant for different threads: a single thread would wait on a reply
+ * it never sends, exactly as it would on a USB endpoint.
  *
- * The two ends must be used from different threads — [PipedInputStream] deadlocks otherwise.
+ * Deliberately not built on [java.io.PipedInputStream]. That class decides a pipe is broken when
+ * the thread that last wrote to it is no longer alive, which is right for a producer and consumer
+ * pair and wrong here: the simulated phone finishes its handshake on one thread and then sends
+ * data from another, so a read that happens in between sees a dead writer and throws "Write end
+ * dead". That is a harness artefact, but it would surface as a TLS failure and send the next
+ * debugging session after the wrong bug. [BytePipe] below waits on a condition instead of
+ * inspecting threads, so the only way to end a stream is to close it.
  */
-class LoopbackTransport(
-    private val source: InputStream,
-    private val sink: OutputStream,
+class LoopbackTransport private constructor(
+    private val incoming: BytePipe,
+    private val outgoing: BytePipe,
 ) : AapTransport {
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = source.read(buffer, offset, length)
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = incoming.read(buffer, offset, length)
 
-    override fun write(buffer: ByteArray, offset: Int, length: Int) {
-        sink.write(buffer, offset, length)
+    override fun write(buffer: ByteArray, offset: Int, length: Int) = outgoing.write(buffer, offset, length)
+
+    override fun flush() {
+        // Nothing to flush: a write is visible to the peer as soon as it is copied.
     }
 
-    override fun flush() = sink.flush()
-
     override fun close() {
-        try {
-            source.close()
-        } catch (_: Exception) {
-        }
-        try {
-            sink.close()
-        } catch (_: Exception) {
-        }
+        incoming.close()
+        outgoing.close()
     }
 
     companion object {
         /** Returns the pair, in the order (session, peer). Each must be used from its own thread. */
         fun pair(capacity: Int = 64 * 1024): Pair<LoopbackTransport, LoopbackTransport> {
-            val upOut = PipedOutputStream()
-            val upIn = PipedInputStream(upOut, capacity)
-            val downOut = PipedOutputStream()
-            val downIn = PipedInputStream(downOut, capacity)
-            return LoopbackTransport(downIn, upOut) to LoopbackTransport(upIn, downOut)
+            val up = BytePipe(capacity)
+            val down = BytePipe(capacity)
+            return LoopbackTransport(incoming = down, outgoing = up) to
+                LoopbackTransport(incoming = up, outgoing = down)
+        }
+    }
+}
+
+/**
+ * A bounded byte queue with blocking ends.
+ *
+ * Writers wait for room, readers wait for bytes. Closing ends the stream once what is already
+ * buffered has been read, so a peer that closes right after its last message does not lose it.
+ */
+internal class BytePipe(private val capacity: Int) {
+
+    private val lock = ReentrantLock()
+    private val readable = lock.newCondition()
+    private val writable = lock.newCondition()
+    private val buffer = ByteArray(capacity)
+    private var head = 0
+    private var size = 0
+    private var closed = false
+
+    fun write(source: ByteArray, offset: Int, length: Int) {
+        var written = 0
+        lock.lock()
+        try {
+            while (written < length) {
+                if (closed) throw IOException("pipe closed while writing")
+                if (size == capacity) {
+                    writable.await()
+                    continue
+                }
+                val room = minOf(capacity - size, length - written)
+                val tail = (head + size) % capacity
+                val first = minOf(room, capacity - tail)
+                System.arraycopy(source, offset + written, buffer, tail, first)
+                if (room > first) {
+                    System.arraycopy(source, offset + written + first, buffer, 0, room - first)
+                }
+                size += room
+                written += room
+                readable.signalAll()
+            }
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun read(target: ByteArray, offset: Int, length: Int): Int {
+        if (length == 0) return 0
+        lock.lock()
+        try {
+            while (size == 0) {
+                if (closed) return -1
+                readable.await()
+            }
+            val taken = minOf(size, length)
+            val first = minOf(taken, capacity - head)
+            System.arraycopy(buffer, head, target, offset, first)
+            if (taken > first) {
+                System.arraycopy(buffer, 0, target, offset + first, taken - first)
+            }
+            head = (head + taken) % capacity
+            size -= taken
+            writable.signalAll()
+            return taken
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun close() {
+        lock.lock()
+        try {
+            closed = true
+            readable.signalAll()
+            writable.signalAll()
+        } finally {
+            lock.unlock()
         }
     }
 }

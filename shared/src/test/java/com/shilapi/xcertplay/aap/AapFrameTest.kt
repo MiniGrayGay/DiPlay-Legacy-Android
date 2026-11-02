@@ -53,15 +53,19 @@ class AapFrameTest {
 
     @Test
     fun controlAndEncryptedFlagsSurviveTheRoundTrip() {
+        // An encrypted payload is opaque — a sealed TLS record. Framing must not read a message id
+        // out of it: those first bytes are the record header, and splitting them off is what makes
+        // the engine report "Unrecognized record version" a layer later.
+        val sealed = byteArrayOf(0x17, 0x03, 0x03, 0x00, 0x2E, 0x01, 0x02)
         val message = readAll(
-            AapFrame.encode(7, control = true, encrypted = true, AapFrame.plaintext(0x8001, ByteArray(4)))
+            AapFrame.encode(7, control = true, encrypted = true, sealed)
                 .fold(ByteArray(0)) { acc, bytes -> acc + bytes },
         ).single()
         assertEquals(7, message.channel)
         assertTrue(message.control)
         assertTrue(message.encrypted)
-        assertEquals(0x8001, message.id)
-        assertEquals(4, message.body.size)
+        assertEquals(AapMessage.UNKNOWN_ID, message.id)
+        assertArrayEquals(sealed, message.body)
     }
 
     @Test

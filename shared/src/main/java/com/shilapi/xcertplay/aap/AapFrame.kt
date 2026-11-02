@@ -181,7 +181,9 @@ class RawFrame(
 /**
  * A complete message after fragmentation is undone.
  *
- * @param id message id, see [AapMessageIds].
+ * @param id message id, see [AapMessageIds]. For an encrypted message the id is inside the
+ *   ciphertext, so the transport layer cannot report it: it is [UNKNOWN_ID] until the payload is
+ *   decrypted, and [body] is the sealed payload verbatim.
  */
 class AapMessage(
     val channel: Int,
@@ -193,6 +195,11 @@ class AapMessage(
     override fun toString(): String =
         "AapMessage(ch=$channel, id=0x${id.toString(16)}, ${if (control) "ctl " else ""}" +
             "${if (encrypted) "enc " else ""}len=${body.size})"
+
+    companion object {
+        /** Id reported for a message whose payload has not been decrypted yet. */
+        const val UNKNOWN_ID = 0
+    }
 }
 
 /**
@@ -312,14 +319,22 @@ class AapMessageAssembler {
         }
 
         assembling = false
-        val plain = buffer.toByteArray()
+        val payload = buffer.toByteArray()
         buffer.reset()
-        if (plain.size < AapFrame.ID_SIZE) {
+        if (encrypted) {
+            // An encrypted message carries a TLS record, not "id plus body". Its id is inside the
+            // ciphertext, so there is nothing here to read it from: the first two bytes are the
+            // record header. Splitting them off as an id would hand the engine a truncated record
+            // and fail later with "Unrecognized record version", which points at TLS rather than
+            // at framing.
+            return AapMessage(channel, control, true, AapMessage.UNKNOWN_ID, payload)
+        }
+        if (payload.size < AapFrame.ID_SIZE) {
             dropped++
             return null
         }
-        val id = AapFrame.idOf(plain)
-        return AapMessage(channel, control, encrypted, id, plain.copyOfRange(AapFrame.ID_SIZE, plain.size))
+        val id = AapFrame.idOf(payload)
+        return AapMessage(channel, control, false, id, payload.copyOfRange(AapFrame.ID_SIZE, payload.size))
     }
 }
 
@@ -327,7 +342,12 @@ class AapMessageAssembler {
 class AapFrameWriter(private val output: OutputStream) {
 
     fun write(message: AapMessage, flush: Boolean = false) {
-        write(AapFrame.plaintext(message.id, message.body), message.channel, message.control, message.encrypted, flush)
+        // Plaintext only: an encrypted body is already a sealed record, and prefixing it with an id
+        // would corrupt the record while looking like a normal write.
+        require(!message.encrypted) {
+            "an encrypted message goes through the byte-array overload; its body is a sealed record, not id plus body"
+        }
+        write(AapFrame.plaintext(message.id, message.body), message.channel, message.control, false, flush)
     }
 
     fun write(plaintext: ByteArray, channel: Int, control: Boolean, encrypted: Boolean, flush: Boolean = false) {
