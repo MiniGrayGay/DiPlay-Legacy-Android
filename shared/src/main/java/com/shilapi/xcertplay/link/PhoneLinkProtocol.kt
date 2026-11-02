@@ -28,6 +28,24 @@ enum class PhoneLinkProtocol(
     CARPLAY("CarPlay", available = true, blockedReason = null),
 
     /**
+     * Android Auto projection, with an open-source phone half.
+     *
+     * The protocol is not Google's private property — AAP is a protocol, and only the *head unit
+     * certificate* is gated: Google's own client accepts nothing but a Google-issued one. Swapping the
+     * phone side for AARE removes that gate, which is why this is offered here.
+     *
+     * Worth being precise about, because it decides who can use it: AARE is an ordinary APK and needs
+     * no Play Services and no root, so any Android phone that can install an APK can be a sender —
+     * including domestic ROMs with no GMS. What it cannot cover is HarmonyOS NEXT, which does not run
+     * APKs at all.
+     */
+    ANDROID_AUTO(
+        "Android Auto（AAP）",
+        available = true,
+        blockedReason = null,
+    ),
+
+    /**
      * Baidu CarLife.
      *
      * The head-unit half is published by Baidu under Apache-2.0 (`CarLife-Vehicle-Lib` and

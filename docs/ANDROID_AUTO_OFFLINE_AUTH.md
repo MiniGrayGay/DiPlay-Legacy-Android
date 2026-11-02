@@ -19,6 +19,32 @@
 
 **一句话**：CarPlay 的"离线认证"是 MFi 芯片；Android 侧的等价物是**自签证书 + 首次信任（TOFU）**。后者只在**开源手机端**成立 —— Google 官方 Android Auto 只认 Google 签发的车机证书。
 
+### 1.1 为什么"只装车机"做不到 —— 认证成本只是换了个地方付
+
+"iPhone 上没装任何 app 就能连 CarPlay"是对的，但那条链路不是免费的：**车机上必须有一颗苹果 MFi 认证芯片**（见 2.1）。手机零安装，是因为车机替手机付了认证成本。
+
+Android 侧同一个成本，Google 放在**车机证书**上：官方 Android Auto 客户端只和"证书由 Google 签发"的车机握手。AARE README 原文：
+
+> Android Auto only accepts head units whose certificate is issued by Google, and this one's is self-signed.
+
+这颗证书只发给整车厂，没有个人或第三方的申请入口，也不零售。所以第三方车机只有两个选择：
+
+| 选择 | 车机 | 手机 | 代价 |
+|---|---|---|---|
+| 用官方 AA 客户端 | 需要 Google 签发的证书 | **零安装** | 拿不到证书 ❌ |
+| 用开放手机端（本方案） | 自签证书，本地生成 | 装一次发送端 | 一次性安装 + 首次信任 |
+| CarPlay | 板载 MFi 芯片 | **零安装** | 买芯片 + 过 MFi 认证 |
+
+顺带一个事实核对：**官方 Android Auto 客户端本来就在手机上**（`com.google.android.projection.gearhead`，GMS 机型系统预置或 Play 商店可装）。它拒绝本方案不是"手机上没有它"，而是"车机证书不是 Google 签的"——握手时直接回 `AuthComplete status = -3`。
+
+国内能用的车机互联，没有任何一家做到第三方车机 + 手机零安装：
+
+- 华为 HiCar / 小米妙享 / OPPO Carlink 的发送端**预置在自家 ROM 里**，所以那几款手机确实零安装，代价是车机侧要过联盟认证（见上表第 5、6 行）。
+- 百度 CarLife 要装 CarLife App。
+- 剩下的只能走 adbd 类投屏（要开 USB 调试），不在本方案考虑范围内。
+
+**所以本方案里"手机装一个发送端"不是实现取巧，而是把 MFi 芯片和 Google 准入这两笔成本，换成了手机上的一次性安装。**
+
 ---
 
 ## 2. "离线认证"在两侧分别是什么

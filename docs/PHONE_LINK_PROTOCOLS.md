@@ -6,15 +6,51 @@
 
 本文记录结论、证据，以及已经落地的 CarLife 实现细节。
 
+---
+
+## 〇、先澄清一个前提：AAP 不等于"只能用 Google 的手机"
+
+Android Auto 投影协议（AAP）本身是**协议**，不是 Google 独占的软件。Google 独占的是**车机证书的
+签发权**（见 `ANDROID_AUTO_OFFLINE_AUTH.md` §1.1）。手机端那半个实现可以换掉：
+
+- **Google 官方客户端**（`com.google.android.projection.gearhead`）：只连 Google 签发的车机，国内
+  GMS 机型才有，且国内 AA 服务不可用 → 对本项目无意义。
+- **AARE**：`an open-source reimplementation of the phone side of Android Auto`，一个普通 APK，
+  **不依赖 Google Play Services**，不 root 也能用（root 只是"系统音频路由"的可选增强）。国产安卓
+  ROM 直接装。
+
+所以 AAP + 自签车机的组合与"手机是不是 Google 生态"无关，**只与"手机能不能装这个 APK"有关**。
+
+## 〇之一、按手机类型选路
+
+| 手机 | 走哪条 | 手机端要做什么 | 本项目状态 |
+|---|---|---|---|
+| iPhone | CarPlay | 什么都不装 | 已实现，`shared/transport` |
+| 国产安卓（小米 / OPPO / vivo / 荣耀 / 一加，GMS 与否都行） | AAP + AARE | 装一次 AARE | 协议已跑通（双模拟器） |
+| 国产安卓（同上） | 百度 CarLife | 装百度 CarLife App | 协议层 + 会话已实现，缺 Activity |
+| 老安卓（无车机协议、不愿装 app） | ADB 投屏 | 开 USB 调试 | 已实现（本项目不作为主打） |
+| 华为鸿蒙 4.x（AOSP 内核，可装 APK） | AAP + AARE / CarLife | 装一次 | 同上 |
+| **纯血鸿蒙 NEXT（不支持 APK）** | HiCar（手机自带） | 装不了任何 APK | **做不了**，需 HiCar 认证 |
+
+最后一行是唯一真正无解的情况：纯血鸿蒙不跑 APK，AARE 与 CarLife 都装不上，而 HiCar 车机端要准入。
+这不是技术问题，见第一节。
+
+> 待验证的加分项：小米 CarWith / OPPO、vivo 的"车机互联"若兼容 CarLife 通道，那几款手机可能
+> **零安装**就能连上本项目的 CarLife 实现。这一点没有实测证据，不做承诺，但值得在真机上试一次。
+
+---
+
 ## 一、结论
 
 | 协议 | 车机端能否自行实现 | 依据 | 手机构建要求 |
 |---|---|---|---|
 | **百度 CarLife** | **能** | 车机端协议库与 Android 车机端 App 由百度以 Apache-2.0 开源 | 手机装"百度 CarLife"App（普通安装） |
+| **Android Auto 投影（AAP）** | **能** | 沿用 CarPlay 同一套自签证书 + TOFU，协议已用 AARE 源码核实 | 手机装 AARE（APK，无需 GMS） |
 | **华为 HiCar** | 不能 | 设备 SDK 官方未公开，需合作申请 → 准入函 → 签使用协议 → 认证验收 | 华为/荣耀手机自带 |
 | **ICCOA Carlink** | 不能 | 车端 SDK 由联盟发放，且**未通过认证的车机手机端不识别** | 小米/OPPO/vivo 系统内置 |
 | CarPlay（对照） | 能（已实现） | DiPlay 现有 `shared/transport` 9000+ 行 | 零安装，iOS 系统内置 |
 | ADB 投屏（补充） | 能（已实现） | 手机自带 `screenrecord` / `input` | 零安装，只需开 USB 调试 |
+
 
 ### 为什么无法自研 HiCar
 
