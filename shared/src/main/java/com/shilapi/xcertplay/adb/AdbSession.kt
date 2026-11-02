@@ -398,6 +398,20 @@ class AdbSession(
             override fun close() = this@AdbStream.close()
         }
 
+        /**
+         * An [OutputStream] view, so a protocol layer can own its own framing.
+         *
+         * The same flow control applies as [write]: each chunk waits for adbd's `OKAY`, which is why the
+         * frames are written through this instead of being handed to the transport directly.
+         */
+        fun outputStream(): OutputStream = object : OutputStream() {
+            override fun write(b: Int) = this@AdbStream.write(byteArrayOf(b.toByte()))
+
+            override fun write(b: ByteArray, off: Int, len: Int) = this@AdbStream.write(b, off, len)
+
+            override fun close() = this@AdbStream.close()
+        }
+
         fun close() {
             if (!closedByUs.compareAndSet(false, true)) return
             val remote = remoteId
