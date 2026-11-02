@@ -752,4 +752,20 @@
     <string name="aa_projection_waiting">Ожидание разрешения на запись экрана</string>
     <string name="aa_injector_label">Касания в режиме Android DiPlay</string>
     <string name="aa_injector_description">Позволяет головному устройству нажимать и проводить по этому телефону во время зеркалирования экрана.</string>
+    <string name="aa_desktop_title">Android Auto</string>
+    <string name="aa_desktop_starting">Запуск…</string>
+    <string name="aa_desktop_reconnecting">Переподключение…</string>
+    <string name="aa_desktop_connected">Подключено</string>
+    <string name="aa_desktop_disconnected">Отключено</string>
+    <string name="aa_desktop_video_ready">Видеоканал активен, ожидание первого кадра…</string>
+    <string name="aa_desktop_phone_unplugged">Телефон отключён</string>
+    <string name="aa_desktop_waiting_usb_permission">Ожидание разрешения USB</string>
+    <string name="aa_desktop_waiting_hint">Подключите телефон к data-порту или откройте AARE на нём и направьте на эту машину. Машина отрисовывает автомобильный интерфейс телефона сама; ничего не зеркалится.</string>
+    <string name="aa_desktop_phone_line">Телефон: %1$s</string>
+    <string name="aa_desktop_usb_hint">Настройка Android Auto через USB…</string>
+    <string name="aa_desktop_network_hint">Ожидание телефона на этом порту (adb forward tcp:5277 localabstract:aare_hu)</string>
+    <string name="aa_desktop_dialing">Подключение к %1$s…</string>
+    <string name="aa_desktop_leave">Назад в DiPlay</string>
+    <string name="aa_desktop_show_log">Журнал</string>
+    <string name="aa_desktop_open">Открыть рабочий стол Android Auto</string>
 </resources>

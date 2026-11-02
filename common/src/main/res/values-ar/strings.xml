@@ -752,4 +752,20 @@
     <string name="aa_projection_waiting">في انتظار إذن تسجيل الشاشة</string>
     <string name="aa_injector_label">لمسات وضع Android في DiPlay</string>
     <string name="aa_injector_description">يتيح لوحدة السيارة النقر والسحب على هذا الهاتف أثناء عكس شاشته.</string>
+    <string name="aa_desktop_title">Android Auto</string>
+    <string name="aa_desktop_starting">جارٍ البدء…</string>
+    <string name="aa_desktop_reconnecting">جارٍ إعادة الاتصال…</string>
+    <string name="aa_desktop_connected">متصل</string>
+    <string name="aa_desktop_disconnected">غير متصل</string>
+    <string name="aa_desktop_video_ready">رابط الفيديو نشط، بانتظار الإطار الأول…</string>
+    <string name="aa_desktop_phone_unplugged">تم فصل الهاتف</string>
+    <string name="aa_desktop_waiting_usb_permission">بانتظار إذن USB</string>
+    <string name="aa_desktop_waiting_hint">وصّل الهاتف بمنفذ بيانات، أو افتح AARE عليه ووجّهه إلى هذه السيارة. تعرض السيارة واجهة سيارة الهاتف بنفسها؛ لا يتم عكس أي شيء.</string>
+    <string name="aa_desktop_phone_line">الهاتف: %1$s</string>
+    <string name="aa_desktop_usb_hint">إعداد Android Auto عبر USB…</string>
+    <string name="aa_desktop_network_hint">بانتظار الهاتف على هذا المنفذ (adb forward tcp:5277 localabstract:aare_hu)</string>
+    <string name="aa_desktop_dialing">جارٍ الاتصال بـ %1$s…</string>
+    <string name="aa_desktop_leave">العودة إلى DiPlay</string>
+    <string name="aa_desktop_show_log">السجل</string>
+    <string name="aa_desktop_open">فتح سطح مكتب Android Auto</string>
 </resources>

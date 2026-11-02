@@ -45,6 +45,24 @@ object AapMediaMessages {
         return writer.build()
     }
 
+    /**
+     * `MicrophoneRequest { bool open = 1; ... }`: the phone asks the car to start or stop recording.
+     *
+     * The rest of the message (echo cancellation, noise suppression, the max unacked window) is
+     * the phone's preference, not a requirement; a head unit that ignores it still works.
+     */
+    fun decodeMicrophoneRequestOpen(bytes: ByteArray): Boolean {
+        val reader = ProtoWire.Reader(bytes)
+        while (true) {
+            val field = reader.next() ?: return false
+            if (field.number == 1) return field.intValue != 0L
+        }
+    }
+
+    /** `MicrophoneResponse { int32 status = 1; int32 session_id = 2 }`. */
+    fun encodeMicrophoneResponse(sessionId: Int, status: Int = 0): ByteArray =
+        ProtoWire.Writer().int32(1, status).int32(2, sessionId).build()
+
     /** `Ack { int32 session_id = 1; uint32 ack = 2 }`. */
     fun encodeAck(sessionId: Int, ack: Int = 1): ByteArray =
         ProtoWire.Writer().int32(1, sessionId).uint32(2, ack).build()

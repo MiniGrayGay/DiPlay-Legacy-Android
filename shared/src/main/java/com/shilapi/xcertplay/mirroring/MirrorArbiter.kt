@@ -24,6 +24,13 @@ sealed interface MirrorArbiterEvent {
     /** The runtime could not start the mode, or it died. */
     data class ModeFailed(val mode: MirrorMode, val reason: String) : MirrorArbiterEvent
 
+    /**
+     * The runtime finished tearing [mode] down on its own: the phone was unplugged, the driver left
+     * the screen, or the retained controller stopped. Unlike [ModeFailed] this is not a failure, so
+     * it neither counts an attempt nor forces a release of resources the other mode may now hold.
+     */
+    data class ModeStopped(val mode: MirrorMode) : MirrorArbiterEvent
+
     /** Nothing was confirmed within the switch budget; fail safe and release everything. */
     data object SwitchTimeout : MirrorArbiterEvent
 }
@@ -67,6 +74,7 @@ class MirrorArbiter(private val switchTimeoutMs: Long = DEFAULT_SWITCH_TIMEOUT_M
         is MirrorArbiterEvent.PhoneDetached -> onDetached(event.mode)
         is MirrorArbiterEvent.ModeStarted -> onStarted(event.mode)
         is MirrorArbiterEvent.ModeFailed -> onFailed(event.mode, event.reason)
+        is MirrorArbiterEvent.ModeStopped -> onStopped(event.mode)
         MirrorArbiterEvent.SwitchTimeout -> onTimeout()
     }
 
@@ -129,8 +137,26 @@ class MirrorArbiter(private val switchTimeoutMs: Long = DEFAULT_SWITCH_TIMEOUT_M
         return listOf(MirrorArbiterEffect.StopMode(mode), MirrorArbiterEffect.ReleaseAll)
     }
 
-    private fun onTimeout(): List<MirrorArbiterEffect> {
-        if (state != MirrorArbiterState.SWITCHING) return emptyList()
+    /**
+     * The runtime stopped [mode] by itself.
+     *
+     * Only the mode that was about to start, or the one that already owned the screen, changes the
+     * state: a late stop notification from a mode the arbiter already abandoned is ignored, for the
+     * same reason a late confirmation is.
+     */
+    private fun onStopped(mode: MirrorMode): List<MirrorArbiterEffect> {
+        if (mode == MirrorMode.NONE) return emptyList()
+        if (state == MirrorArbiterState.SWITCHING) {
+            if (target != mode) return emptyList()
+            reset()
+            return emptyList()
+        }
+        if (owner != mode) return emptyList()
+        reset()
+        return emptyList()
+    }
+
+    private fun onTimeout(): List<MirrorArbiterEffect> {        if (state != MirrorArbiterState.SWITCHING) return emptyList()
         failedAttempts++
         reset()
         return listOf(MirrorArbiterEffect.ReleaseAll)

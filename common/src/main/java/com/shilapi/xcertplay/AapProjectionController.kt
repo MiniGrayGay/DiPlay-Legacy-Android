@@ -6,11 +6,13 @@ import android.hardware.usb.UsbManager
 import android.view.Surface
 import com.shilapi.xcertplay.aap.AapAudioStream
 import com.shilapi.xcertplay.aap.AapAudioStreamType
+import com.shilapi.xcertplay.aap.AapHeadUnitInfo
 import com.shilapi.xcertplay.aap.AapIdentity
 import com.shilapi.xcertplay.aap.AapInputMessages
 import com.shilapi.xcertplay.aap.AapMediaMessages
 import com.shilapi.xcertplay.aap.AapMessage
 import com.shilapi.xcertplay.aap.AapMessageIds
+import com.shilapi.xcertplay.aap.AapMicrophoneSpec
 import com.shilapi.xcertplay.aap.AapResolution
 import com.shilapi.xcertplay.aap.AapSensorMessages
 import com.shilapi.xcertplay.aap.AapSensorType
@@ -69,27 +71,70 @@ class AapProjectionController(
          */
         fun onFirstFrame() {}
 
+        /** What the phone called itself, once it has said. Shown on the car's waiting screen. */
+        fun onPhone(name: String) {}
+
         fun onEnded(reason: String)
     }
 
-    /** What the head unit offers. Kept in one place so the diagnostics screen can print it. */
+    /** The screen this unit is projecting onto, which decides the one video configuration offered. */
+    private val screenWidth: Int = context.resources.displayMetrics.widthPixels
+    private val screenHeight: Int = context.resources.displayMetrics.heightPixels
+
+    /**
+     * The single video configuration the phone may use.
+     *
+     * Exactly one on purpose. The touch panel is advertised in this coordinate space, and the
+     * phone maps the car's touches from that space onto whatever configuration it picked — two
+     * configurations would mean two coordinate systems on one touchscreen, and every tap would
+     * land somewhere between them. A 1024x600 panel therefore picks 1280x720 and letterboxes,
+     * which is also what an aftermarket unit does.
+     */
+    private val videoConfig: AapVideoConfig = if (maxOf(screenWidth, screenHeight) > 1024) {
+        AapVideoConfig(AapResolution.P1280x720, frameRate = 30, density = 160)
+    } else {
+        AapVideoConfig(AapResolution.P800x480, frameRate = 30, density = 160)
+    }
+
+    /**
+     * What the head unit offers.
+     *
+     * Three audio sinks, because Android Auto keeps them apart and a car that mixes them loses the
+     * one thing the split is for: navigation prompts stay audible while music ducks. The
+     * microphone is what lets the phone's assistant listen through the car.
+     */
     val services: AapServiceSet = AapServiceSet(
         displayName = "DiPlay",
-        video = listOf(
-            // The one resolution that both suits a small car screen and keeps the emulator's
-            // software encoder at a speed where latency is tolerable.
-            DEFAULT_VIDEO,
+        video = listOf(videoConfig),
+        audio = listOf(
+            AapAudioStream(AapAudioStreamType.MEDIA, sampleRate = 48_000, channels = 2),
+            AapAudioStream(AapAudioStreamType.GUIDANCE, sampleRate = 16_000, channels = 1),
+            AapAudioStream(AapAudioStreamType.SYSTEM, sampleRate = 16_000, channels = 1),
         ),
-        audio = listOf(AapAudioStream(AapAudioStreamType.MEDIA)),
-        touchscreen = AapTouchScreen(DEFAULT_VIDEO.resolution.width, DEFAULT_VIDEO.resolution.height),
+        touchscreen = AapTouchScreen(videoConfig.resolution.width, videoConfig.resolution.height),
         sensors = listOf(AapSensorType.NIGHT_MODE, AapSensorType.DRIVING_STATUS),
+        microphone = AapMicrophoneSpec(),
+        headUnit = AapHeadUnitInfo(
+            make = "DiPlay",
+            model = "Android Auto head unit",
+            year = "2026",
+            headUnitMake = "DiPlay",
+            headUnitModel = "DiPlay",
+            softwareVersion = "1",
+        ),
+        navigationStatus = true,
+        mediaPlayback = true,
         pingIntervalMs = 1_000,
         pingTimeoutMs = 5_000,
     )
 
     private val identity: AapIdentity = AapIdentityStore.load(context)
     private val decoder = AapVideoDecoder(log = { note(it) }, onFirstFrame = { listener.onFirstFrame() })
-    private val audio = AapAudioPlayer { note(it) }
+
+    /** One player per audio sink: the three streams run at different rates and must not share one. */
+    private val audioPlayers = HashMap<Int, AapAudioPlayer>()
+    private val microphone = AapMicrophone { note(it) }
+    private var microphoneSession = 0
 
     @Volatile
     private var session: AapSession? = null
@@ -106,7 +151,7 @@ class AapProjectionController(
     }
 
     private var videoSessionId = 0
-    private var audioSessionId = 0
+    private val audioSessionIds = HashMap<Int, Int>()
     private var videoConfigIndex = 0
     private var nightMode = false
     private var drivingStatus = 0
@@ -116,11 +161,11 @@ class AapProjectionController(
 
     /** Size the phone announced in its START, which is what touch coordinates are relative to. */
     @Volatile
-    var videoWidth: Int = DEFAULT_VIDEO.resolution.width
+    var videoWidth: Int = videoConfig.resolution.width
         private set
 
     @Volatile
-    var videoHeight: Int = DEFAULT_VIDEO.resolution.height
+    var videoHeight: Int = videoConfig.resolution.height
         private set
 
     val isRunning: Boolean get() = session?.isOpen == true
@@ -223,7 +268,8 @@ class AapProjectionController(
         created.close()
         session = null
         decoder.release()
-        audio.stop()
+        microphone.stop()
+        stopAllAudio()
         notify("会话已结束：$lastFailure")
         listener.onEnded(lastFailure)
     }
@@ -279,7 +325,8 @@ class AapProjectionController(
         worker?.interrupt()
         worker = null
         decoder.release()
-        audio.stop()
+        microphone.stop()
+        stopAllAudio()
     }
 
     // ------------------------------------------------------------------ session callbacks
@@ -298,6 +345,7 @@ class AapProjectionController(
 
         override fun onPhoneDiscovered(request: com.shilapi.xcertplay.aap.AapControlMessages.ServiceDiscoveryRequest) {
             notify("手机：${request.display}")
+            listener.onPhone(request.display)
         }
 
         override fun onReady(session: AapSession) {
@@ -308,11 +356,18 @@ class AapProjectionController(
         }
 
         override fun onServiceMessage(channel: Int, message: AapMessage) {
-            when (channel) {
-                services.videoChannel -> onVideoMessage(message)
-                services.inputChannel -> onInputMessage(message)
-                services.sensorChannel -> onSensorMessage(message)
-                else -> if (services.audioChannels.containsKey(channel)) onAudioMessage(channel, message)
+            when {
+                channel == services.videoChannel -> onVideoMessage(message)
+                channel == services.inputChannel -> onInputMessage(message)
+                channel == services.sensorChannel -> onSensorMessage(message)
+                services.microphone != null && channel == services.microphoneChannel -> onMicrophoneMessage(message)
+                services.audioChannels.containsKey(channel) -> onAudioMessage(channel, message)
+                // Navigation status and now-playing are one-way: the phone reports, the car only
+                // has to keep the channel open. A head unit with an instrument cluster would draw
+                // them; this one has no second display, so the messages are counted and dropped.
+                channel == services.navigationChannel -> note("navigation status ${message.body.size}B")
+                channel == services.playbackChannel -> note("now playing ${message.body.size}B")
+                else -> note("message on unknown channel $channel")
             }
         }
 
@@ -411,7 +466,7 @@ class AapProjectionController(
         val stream = services.audioChannels[channel] ?: return
         when (message.id) {
             AapMessageIds.Media.SETUP -> {
-                note("audio SETUP on $channel")
+                note("audio SETUP on $channel (${stream.type})")
                 session?.send(
                     channel,
                     AapMessageIds.Media.CONFIG,
@@ -421,19 +476,20 @@ class AapProjectionController(
 
             AapMessageIds.Media.START -> {
                 val start = AapMediaMessages.decodeStart(message.body)
-                audioSessionId = start.sessionId
-                audio.start(stream.sampleRate, stream.channels, stream.bitDepth)
-                note("audio START $start")
+                audioSessionIds[channel] = start.sessionId
+                playerFor(channel).start(stream.sampleRate, stream.channels, stream.bitDepth)
+                note("audio START $start on $channel")
             }
 
             AapMessageIds.Media.STOP -> {
-                audioSessionId = 0
-                audio.stop()
+                audioSessionIds.remove(channel)
+                playerFor(channel).stop()
+                note("audio STOP on $channel")
             }
 
             AapMessageIds.Media.DATA -> {
                 if (message.body.size <= AapMediaMessages.DATA_HEADER) return
-                audio.write(
+                playerFor(channel).write(
                     message.body,
                     AapMediaMessages.DATA_HEADER,
                     message.body.size - AapMediaMessages.DATA_HEADER,
@@ -441,11 +497,76 @@ class AapProjectionController(
                 session?.send(
                     channel,
                     AapMessageIds.Media.ACK,
-                    AapMediaMessages.encodeAck(audioSessionId, 1),
+                    AapMediaMessages.encodeAck(audioSessionIds[channel] ?: 0, 1),
                 )
             }
 
+            // The car's mixer ran dry: the phone refills a little ahead next time.
+            AapMessageIds.Media.AUDIO_UNDERFLOW_NOTIFICATION ->
+                note("audio underflow on $channel")
+
             else -> note("audio 0x${message.id.toString(16)} ignored")
+        }
+    }
+
+    /**
+     * The phone wants to record from the car.
+     *
+     * `SETUP`/`CONFIG` first, then `MicrophoneRequest{open}`. A close must not stop a capture the
+     * next request has already restarted, so the answer echoes the session id the phone was given
+     * rather than a fresh one.
+     */
+    private fun onMicrophoneMessage(message: AapMessage) {
+        val spec = services.microphone ?: return
+        when (message.id) {
+            AapMessageIds.Media.SETUP -> {
+                note("microphone SETUP")
+                session?.send(
+                    services.microphoneChannel,
+                    AapMessageIds.Media.CONFIG,
+                    AapMediaMessages.encodeConfig(maxUnacked = 1, configurationIndices = listOf(0)),
+                )
+            }
+
+            AapMessageIds.Media.MICROPHONE_REQUEST -> {
+                val open = AapMediaMessages.decodeMicrophoneRequestOpen(message.body)
+                if (open) {
+                    microphoneSession = (microphoneSession + 1).coerceAtLeast(1)
+                    session?.send(
+                        services.microphoneChannel,
+                        AapMessageIds.Media.MICROPHONE_RESPONSE,
+                        AapMediaMessages.encodeMicrophoneResponse(microphoneSession, status = 0),
+                    )
+                    microphone.start(spec.sampleRate, spec.channels, spec.bitDepth) { data, length ->
+                        sendMicrophoneChunk(data, length)
+                    }
+                    note("microphone opened as session $microphoneSession")
+                } else {
+                    microphone.stop()
+                    session?.send(
+                        services.microphoneChannel,
+                        AapMessageIds.Media.MICROPHONE_RESPONSE,
+                        AapMediaMessages.encodeMicrophoneResponse(microphoneSession, status = 0),
+                    )
+                    note("microphone closed")
+                }
+            }
+
+            else -> note("microphone 0x${message.id.toString(16)} ignored")
+        }
+    }
+
+    /** Forwards one captured chunk with the 8-byte timestamp every DATA body starts with. */
+    private fun sendMicrophoneChunk(data: ByteArray, length: Int) {
+        val target = session ?: return
+        val body = ByteArray(AapMediaMessages.DATA_HEADER + length)
+        val timestamp = System.nanoTime() / 1_000
+        for (i in 0 until AapMediaMessages.DATA_HEADER) {
+            body[i] = (timestamp ushr (56 - 8 * i)).toByte()
+        }
+        System.arraycopy(data, 0, body, AapMediaMessages.DATA_HEADER, length)
+        sender.execute {
+            runCatching { target.send(services.microphoneChannel, AapMessageIds.Media.DATA, body) }
         }
     }
 
@@ -477,10 +598,37 @@ class AapProjectionController(
             AapSensorType.DRIVING_STATUS -> AapSensorMessages.encodeBatch(drivingStatus = drivingStatus)
             else -> null
         }
-        if (body != null) session?.send(services.sensorChannel, AapMessageIds.Sensor.BATCH, body)
+        if (body == null) {
+            // A sensor this unit does not have. Saying so is what stops the phone waiting for a
+            // first value that would never come.
+            session?.send(
+                services.sensorChannel,
+                AapMessageIds.Sensor.ERROR,
+                AapSensorMessages.encodeResponse(AapSensorMessages.SENSOR_NOT_SUPPORTED),
+            )
+            return
+        }
+        session?.send(
+            services.sensorChannel,
+            AapMessageIds.Sensor.RESPONSE,
+            AapSensorMessages.encodeResponse(0),
+        )
+        session?.send(services.sensorChannel, AapMessageIds.Sensor.BATCH, body)
     }
 
     // ------------------------------------------------------------------ plumbing
+
+    private fun playerFor(channel: Int): AapAudioPlayer = synchronized(audioPlayers) {
+        audioPlayers.getOrPut(channel) { AapAudioPlayer { note(it) } }
+    }
+
+    private fun stopAllAudio() {
+        synchronized(audioPlayers) {
+            for (player in audioPlayers.values) player.stop()
+            audioPlayers.clear()
+        }
+        audioSessionIds.clear()
+    }
 
     /** Reason for the last failure, so the UI can say something better than "disconnected". */
     @Volatile
@@ -520,10 +668,5 @@ class AapProjectionController(
          */
         const val MAX_UNACKED = 4
 
-        private val DEFAULT_VIDEO = AapVideoConfig(
-            resolution = AapResolution.P800x480,
-            frameRate = 30,
-            density = 160,
-        )
     }
 }

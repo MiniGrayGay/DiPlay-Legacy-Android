@@ -1364,8 +1364,8 @@ class DiPlayActivity : ComponentActivity() {
             // service on the phone. The port is echoed on the button because the sender has to be
             // told the same number.
             if (Build.VERSION.SDK_INT >= 21) {
-                card.addView(button(getString(R.string.aap_receiver_button, AapProjectionActivity.DEFAULT_PORT), false) {
-                    startActivity(AapProjectionActivity.intentForListening(this@DiPlayActivity))
+                card.addView(button(getString(R.string.aa_desktop_open), true) {
+                    startActivity(AndroidAutoActivity.intentForListening(this@DiPlayActivity))
                 }, matchButton(12, 60))
                 card.addView(label(getString(R.string.aap_receiver_hint), 14, MUTED).apply {
                     setPadding(0, dp(4), 0, 0)

@@ -48,6 +48,17 @@ object AapSensorMessages {
         return writer.build()
     }
 
+    /**
+     * `SensorResponse { MessageStatus status = 1 }`.
+     *
+     * Sent before the first batch for a sensor the phone asked for, and with [SENSOR_NOT_SUPPORTED]
+     * for one this car does not have. Without it the phone waits for a value that never arrives.
+     */
+    fun encodeResponse(status: Int = 0): ByteArray = ProtoWire.Writer().int32(1, status).build()
+
+    /** `MessageStatus.SENSOR_NOT_SUPPORTED`; the phone drops the sensor and asks for the next. */
+    const val SENSOR_NOT_SUPPORTED = -4
+
     /** One `SensorRequest { SensorType type = 1; int64 min_update_period = 2 }`. */
     class Request(val type: Int, val minUpdatePeriodMs: Long) {
         override fun toString() = "sensor=$type every ${minUpdatePeriodMs}ms"

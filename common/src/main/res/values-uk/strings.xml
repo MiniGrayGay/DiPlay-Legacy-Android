@@ -764,4 +764,20 @@
     <string name="aa_projection_waiting">Очікування дозволу на запис екрана</string>
     <string name="aa_injector_label">Дотики в режимі Android DiPlay</string>
     <string name="aa_injector_description">Дозволяє головному пристрою натискати й проводити по цьому телефону під час дзеркалення екрана.</string>
+    <string name="aa_desktop_title">Android Auto</string>
+    <string name="aa_desktop_starting">Запуск…</string>
+    <string name="aa_desktop_reconnecting">Перепідключення…</string>
+    <string name="aa_desktop_connected">Підключено</string>
+    <string name="aa_desktop_disconnected">Відключено</string>
+    <string name="aa_desktop_video_ready">Відеоканал активний, очікування першого кадру…</string>
+    <string name="aa_desktop_phone_unplugged">Телефон відключено</string>
+    <string name="aa_desktop_waiting_usb_permission">Очікування дозволу USB</string>
+    <string name="aa_desktop_waiting_hint">Підключіть телефон до data-порту або відкрийте AARE на ньому й спрямуйте на цей автомобіль. Автомобіль сам відмальовує автомобільний інтерфейс телефона; нічого не дзеркалиться.</string>
+    <string name="aa_desktop_phone_line">Телефон: %1$s</string>
+    <string name="aa_desktop_usb_hint">Налаштування Android Auto через USB…</string>
+    <string name="aa_desktop_network_hint">Очікування телефона на цьому порту (adb forward tcp:5277 localabstract:aare_hu)</string>
+    <string name="aa_desktop_dialing">Підключення до %1$s…</string>
+    <string name="aa_desktop_leave">Назад до DiPlay</string>
+    <string name="aa_desktop_show_log">Журнал</string>
+    <string name="aa_desktop_open">Відкрити робочий стіл Android Auto</string>
 </resources>

@@ -106,6 +106,20 @@
                 android:resource="@xml/usb_device_filter" />
         </activity>
 
+        <!-- The Android side of the same idea: the car gives the screen to the phone's own car UI
+             (AARE or Google's Android Auto over the AAP link) instead of mirroring it. Separate
+             affinity so it does not replace the CarPlay screen in the recents stack. -->
+        <activity
+            android:name="com.shilapi.xcertplay.AndroidAutoActivity"
+            android:taskAffinity="${applicationId}.androidauto"
+            android:configChanges="density|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:screenOrientation="fullSensor"
+            android:theme="@style/Theme.Xcertplay"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Issue #321: Dedicated trampoline activity for external USB Bluetooth dongles (e.g. UGREEN CM591).
              Provides the static intent-filter with usb_bt_device_filter.xml required for Android to persist
              the "Use by default for this USB device" permission checkbox across reboots, isolated from Apple iPhones. -->

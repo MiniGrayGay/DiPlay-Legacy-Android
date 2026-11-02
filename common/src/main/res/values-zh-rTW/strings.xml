@@ -821,4 +821,20 @@
     <string name="aa_projection_waiting">正在等待螢幕錄製授權</string>
     <string name="aa_injector_label">DiPlay 安卓模式觸控</string>
     <string name="aa_injector_description">允許車機在鏡像螢幕時點擊和滑動這支手機。</string>
+    <string name="aa_desktop_title">Android Auto</string>
+    <string name="aa_desktop_starting">正在啟動…</string>
+    <string name="aa_desktop_reconnecting">正在重新連線…</string>
+    <string name="aa_desktop_connected">已連線</string>
+    <string name="aa_desktop_disconnected">已斷線</string>
+    <string name="aa_desktop_video_ready">視訊通道已就緒，等待首幀…</string>
+    <string name="aa_desktop_phone_unplugged">手機已拔除</string>
+    <string name="aa_desktop_waiting_usb_permission">等待 USB 授權</string>
+    <string name="aa_desktop_waiting_hint">把手機插到資料口，或在手機上開啟 AARE 並連到本機。車機顯示的是手機渲染的車載桌面，不是手機螢幕鏡像。</string>
+    <string name="aa_desktop_phone_line">手機：%1$s</string>
+    <string name="aa_desktop_usb_hint">正在透過 USB 建立 Android Auto 連線…</string>
+    <string name="aa_desktop_network_hint">正在等待手機連線（adb forward tcp:5277 localabstract:aare_hu）</string>
+    <string name="aa_desktop_dialing">正在連線 %1$s…</string>
+    <string name="aa_desktop_leave">返回 DiPlay</string>
+    <string name="aa_desktop_show_log">日誌</string>
+    <string name="aa_desktop_open">開啟 Android Auto 桌面</string>
 </resources>

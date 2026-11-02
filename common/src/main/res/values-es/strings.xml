@@ -752,4 +752,20 @@
     <string name="aa_projection_waiting">Esperando el permiso de captura de pantalla</string>
     <string name="aa_injector_label">Toques del modo Android de DiPlay</string>
     <string name="aa_injector_description">Permite que el equipo del coche toque y deslice en este teléfono mientras se duplica su pantalla.</string>
+    <string name="aa_desktop_title">Android Auto</string>
+    <string name="aa_desktop_starting">Iniciando…</string>
+    <string name="aa_desktop_reconnecting">Reconectando…</string>
+    <string name="aa_desktop_connected">Conectado</string>
+    <string name="aa_desktop_disconnected">Desconectado</string>
+    <string name="aa_desktop_video_ready">Enlace de vídeo activo, esperando el primer fotograma…</string>
+    <string name="aa_desktop_phone_unplugged">El teléfono se desconectó</string>
+    <string name="aa_desktop_waiting_usb_permission">Esperando permiso USB</string>
+    <string name="aa_desktop_waiting_hint">Conecta el teléfono a un puerto de datos o abre AARE en él y apúntalo a este coche. El coche dibuja el salpicadero del teléfono; nada se refleja.</string>
+    <string name="aa_desktop_phone_line">Teléfono: %1$s</string>
+    <string name="aa_desktop_usb_hint">Configurando Android Auto por USB…</string>
+    <string name="aa_desktop_network_hint">Esperando al teléfono en este puerto (adb forward tcp:5277 localabstract:aare_hu)</string>
+    <string name="aa_desktop_dialing">Conectando a %1$s…</string>
+    <string name="aa_desktop_leave">Volver a DiPlay</string>
+    <string name="aa_desktop_show_log">Registro</string>
+    <string name="aa_desktop_open">Abrir el escritorio de Android Auto</string>
 </resources>

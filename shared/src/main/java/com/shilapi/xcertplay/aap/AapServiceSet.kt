@@ -121,6 +121,49 @@ object AapSensorType {
 }
 
 /**
+ * What the car says about itself.
+ *
+ * A phone shows the car in "connected to …" and some versions pick a layout from the year, so an
+ * empty answer here is not fatal but does make the projection look like an anonymous adapter. The
+ * strings are the only place a head unit gets to name its own hardware.
+ */
+data class AapHeadUnitInfo(
+    val make: String = "DiPlay",
+    val model: String = "Head Unit",
+    val year: String = "",
+    val headUnitMake: String = "DiPlay",
+    val headUnitModel: String = "DiPlay",
+    val softwareVersion: String = "",
+) {
+    internal fun encode(): ByteArray = ProtoWire.Writer()
+        .string(1, make)
+        .string(2, model)
+        .string(3, year)
+        .string(5, headUnitMake)
+        .string(6, headUnitModel)
+        .string(8, softwareVersion)
+        .build()
+}
+
+/**
+ * The car's microphone, offered to the phone's voice assistant.
+ *
+ * A head unit without this still projects, it just cannot listen: the assistant button on the
+ * phone's own screen has no audio to record. 16 kHz mono is what Android Auto asks for.
+ */
+data class AapMicrophoneSpec(
+    val sampleRate: Int = 16_000,
+    val bitDepth: Int = 16,
+    val channels: Int = 1,
+) {
+    internal fun encodeConfig(): ByteArray = ProtoWire.Writer()
+        .uint32(1, sampleRate)
+        .uint32(2, bitDepth)
+        .uint32(3, channels)
+        .build()
+}
+
+/**
  * What this head unit offers the phone, and the channel numbers it will answer on.
  *
  * The head unit picks the channel ids; the phone uses them verbatim for everything that follows.
@@ -130,8 +173,11 @@ object AapSensorType {
  * ```
  * 1              video sink
  * 2 .. 1+n       audio sinks, in the order given
- * next           input source    (only if a touch screen is present)
- * next           sensor source   (only if sensors are listed)
+ * next           microphone     (only if one is offered)
+ * next           input source   (only if a touch screen is present)
+ * next           sensor source  (only if sensors are listed)
+ * next           navigation     (only if enabled)
+ * next           now playing    (only if enabled)
  * ```
  *
  * Leaving a service out is meaningful: the phone only opens what it finds here, so a build without
@@ -144,6 +190,12 @@ class AapServiceSet(
     val touchscreen: AapTouchScreen? = null,
     val keycodes: List<Int> = emptyList(),
     val sensors: List<Int> = emptyList(),
+    val microphone: AapMicrophoneSpec? = null,
+    val headUnit: AapHeadUnitInfo? = null,
+    /** Turn-by-turn for the instrument cluster; the phone sends it, the car only has to listen. */
+    val navigationStatus: Boolean = false,
+    /** Now-playing metadata, for the car's own widgets. Same direction as [navigationStatus]. */
+    val mediaPlayback: Boolean = false,
     val pingIntervalMs: Int = 1_000,
     val pingTimeoutMs: Int = 5_000,
 ) {
@@ -158,16 +210,25 @@ class AapServiceSet(
     val audioChannels: Map<Int, AapAudioStream> =
         audio.mapIndexed { index, stream -> (VIDEO_CHANNEL + 1 + index) to stream }.toMap()
 
-    val inputChannel: Int = VIDEO_CHANNEL + 1 + audio.size
+    val microphoneChannel: Int = VIDEO_CHANNEL + 1 + audio.size
+
+    val inputChannel: Int = microphoneChannel + if (microphone != null) 1 else 0
 
     val sensorChannel: Int = inputChannel + if (touchscreen != null || keycodes.isNotEmpty()) 1 else 0
+
+    val navigationChannel: Int = sensorChannel + if (sensors.isNotEmpty()) 1 else 0
+
+    val playbackChannel: Int = navigationChannel + if (navigationStatus) 1 else 0
 
     /** Every channel this set will open, for logging and for the session's bookkeeping. */
     fun channels(): List<Int> = buildList {
         if (video.isNotEmpty()) add(videoChannel)
         addAll(audioChannels.keys)
+        if (microphone != null) add(microphoneChannel)
         if (touchscreen != null || keycodes.isNotEmpty()) add(inputChannel)
         if (sensors.isNotEmpty()) add(sensorChannel)
+        if (navigationStatus) add(navigationChannel)
+        if (mediaPlayback) add(playbackChannel)
     }
 
     /** The resolution the head unit would prefer if the phone lets it choose, i.e. the first. */
@@ -177,6 +238,7 @@ class AapServiceSet(
     fun encodeResponse(): ByteArray {
         val writer = ProtoWire.Writer()
         for (service in services()) writer.message(1, service)
+        headUnit?.let { writer.message(17, it.encode()) }
         // display_name is what the phone puts in "connected to <name>".
         writer.string(14, displayName)
         writer.message(16, connectionConfiguration())
@@ -186,10 +248,13 @@ class AapServiceSet(
     private fun services(): List<ByteArray> = buildList {
         if (video.isNotEmpty()) add(service(VIDEO_CHANNEL, SERVICE_MEDIA_SINK, videoSink()))
         for ((channel, stream) in audioChannels) add(service(channel, SERVICE_MEDIA_SINK, audioSink(stream)))
+        microphone?.let { add(service(microphoneChannel, SERVICE_MEDIA_SOURCE, mediaSource(it))) }
         if (touchscreen != null || keycodes.isNotEmpty()) {
             add(service(inputChannel, SERVICE_INPUT_SOURCE, inputSource()))
         }
         if (sensors.isNotEmpty()) add(service(sensorChannel, SERVICE_SENSOR_SOURCE, sensorSource()))
+        if (navigationStatus) add(service(navigationChannel, SERVICE_NAVIGATION_STATUS, navigationStatusService()))
+        if (mediaPlayback) add(service(playbackChannel, SERVICE_MEDIA_PLAYBACK, ByteArray(0)))
     }
 
     private fun service(channel: Int, serviceId: Int, body: ByteArray): ByteArray =
@@ -224,6 +289,24 @@ class AapServiceSet(
         for (type in sensors) writer.message(1, ProtoWire.Writer().int32(1, type).build())
         return writer.build()
     }
+
+    /** `MediaSourceService`: the microphone the phone's assistant records from. */
+    private fun mediaSource(mic: AapMicrophoneSpec): ByteArray = ProtoWire.Writer()
+        .int32(1, AapCodec.AUDIO_PCM)
+        .message(2, mic.encodeConfig())
+        .bool(3, false)
+        .build()
+
+    /**
+     * `NavigationStatusService`.
+     *
+     * The type says the car reads turn-by-turn as an enum, not as a rendered image, so the phone
+     * never has to encode a map panel for the cluster.
+     */
+    private fun navigationStatusService(): ByteArray = ProtoWire.Writer()
+        .uint32(1, NAVIGATION_MIN_INTERVAL_MS)
+        .int32(2, CLUSTER_ENUM)
+        .build()
 
     private fun connectionConfiguration(): ByteArray = ProtoWire.Writer()
         .message(
@@ -263,5 +346,14 @@ class AapServiceSet(
         const val SERVICE_SENSOR_SOURCE = 2
         const val SERVICE_MEDIA_SINK = 3
         const val SERVICE_INPUT_SOURCE = 4
+        const val SERVICE_MEDIA_SOURCE = 5
+        const val SERVICE_NAVIGATION_STATUS = 8
+        const val SERVICE_MEDIA_PLAYBACK = 9
+
+        /** `NavigationStatusService.InstrumentClusterType.ENUM`, which is 2 — IMAGE is 1. */
+        const val CLUSTER_ENUM = 2
+
+        /** A turn every second is more than a driver can use; the phone throttles to this. */
+        const val NAVIGATION_MIN_INTERVAL_MS = 1_000
     }
 }

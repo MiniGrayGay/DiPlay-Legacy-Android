@@ -871,4 +871,21 @@
     <string name="aa_projection_waiting">Waiting for screen capture consent</string>
     <string name="aa_injector_label">DiPlay Android mode taps</string>
     <string name="aa_injector_description">Lets the car head unit tap and swipe on this phone while its screen is mirrored.</string>
+    <!-- Android Auto desktop: the car hands the whole screen to the phone's own car UI. -->
+    <string name="aa_desktop_title">Android Auto</string>
+    <string name="aa_desktop_starting">Starting…</string>
+    <string name="aa_desktop_reconnecting">Reconnecting…</string>
+    <string name="aa_desktop_connected">Connected</string>
+    <string name="aa_desktop_disconnected">Disconnected</string>
+    <string name="aa_desktop_video_ready">Video link up, waiting for the first frame…</string>
+    <string name="aa_desktop_phone_unplugged">The phone was unplugged</string>
+    <string name="aa_desktop_waiting_usb_permission">Waiting for USB permission</string>
+    <string name="aa_desktop_waiting_hint">Plug the phone into a data port, or open AARE on it and point it at this car. The car draws the phone\'s dashboard itself; nothing is mirrored.</string>
+    <string name="aa_desktop_phone_line">Phone: %1$s</string>
+    <string name="aa_desktop_usb_hint">Setting up Android Auto over USB…</string>
+    <string name="aa_desktop_network_hint">Waiting for the phone on this port (adb forward tcp:5277 localabstract:aare_hu)</string>
+    <string name="aa_desktop_dialing">Connecting to %1$s…</string>
+    <string name="aa_desktop_leave">Back to DiPlay</string>
+    <string name="aa_desktop_show_log">Log</string>
+    <string name="aa_desktop_open">Open the Android Auto desktop</string>
 </resources>
