@@ -758,4 +758,10 @@
     <string name="aa_sender_waiting">Очікування автомобіля на порту %1$d</string>
     <string name="aa_sender_streaming">Передавання в автомобіль</string>
     <string name="aa_mode_needs_api">Android-режиму потрібен Android 5.0 або новіший</string>
+    <string name="aa_projection_notification">Триває дзеркалення екрана телефона</string>
+    <string name="aa_projection_stop">Зупинити</string>
+    <string name="aa_projection_denied">Запис екрана відхилено; надсилається тестове зображення</string>
+    <string name="aa_projection_waiting">Очікування дозволу на запис екрана</string>
+    <string name="aa_injector_label">Дотики в режимі Android DiPlay</string>
+    <string name="aa_injector_description">Дозволяє головному пристрою натискати й проводити по цьому телефону під час дзеркалення екрана.</string>
 </resources>

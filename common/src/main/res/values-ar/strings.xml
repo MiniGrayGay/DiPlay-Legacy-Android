@@ -746,4 +746,10 @@
     <string name="aa_sender_waiting">في انتظار السيارة على المنفذ %1$d</string>
     <string name="aa_sender_streaming">جارٍ البث إلى السيارة</string>
     <string name="aa_mode_needs_api">يتطلب الوضع الآلي Android 5.0 أو أحدث</string>
+    <string name="aa_projection_notification">جارٍ عكس شاشة هذا الهاتف</string>
+    <string name="aa_projection_stop">إيقاف</string>
+    <string name="aa_projection_denied">تم رفض تسجيل الشاشة؛ سيُرسل نمط الاختبار بدلاً من ذلك</string>
+    <string name="aa_projection_waiting">في انتظار إذن تسجيل الشاشة</string>
+    <string name="aa_injector_label">لمسات وضع Android في DiPlay</string>
+    <string name="aa_injector_description">يتيح لوحدة السيارة النقر والسحب على هذا الهاتف أثناء عكس شاشته.</string>
 </resources>

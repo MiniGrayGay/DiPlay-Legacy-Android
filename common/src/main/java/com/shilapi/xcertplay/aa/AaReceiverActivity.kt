@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -35,6 +36,9 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
         private const val EXTRA_HOST = "aa_host"
         private const val EXTRA_PORT = "aa_port"
         private const val TAG = "DiPlayAa"
+
+        /** How long the diagnostics strip stays up after the picture appears. */
+        private const val STATS_VISIBLE_MS = 6_000L
 
         fun intent(context: Context, host: String = AaPreferences.receiverHost(context), port: Int = AaPreferences.receiverPort(context)): Intent =
             Intent(context, AaReceiverActivity::class.java)
@@ -66,9 +70,14 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
 
     private var roundTripUs = -1L
     private var rawFrames = 0L
-    private var lastStats: AaMessages.Stats? = null
     private var phoneName = ""
-    private var streamSize = ""
+
+    /** What the phone said it is sending; drives the aspect-fit and the touch mapping. */
+    private var videoWidth = 0
+    private var videoHeight = 0
+
+    /** The stats strip is useful while connecting and noise afterwards, so it fades on streaming. */
+    private var statsHiddenAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,6 +141,8 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
             forwardTouch(event)
             true
         }
+        // Rotation or a window resize changes the available box but not the phone's aspect ratio.
+        root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoAspect() }
         setContentView(root)
     }
 
@@ -200,9 +211,7 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
         // frames that were never rendered on this link.
         rawFrames = 0L
         roundTripUs = -1L
-        lastStats = null
         phoneName = ""
-        streamSize = ""
         hintView.visibility = View.VISIBLE
         hintView.text = getString(com.shilapi.xcertplay.host.R.string.aa_receiver_waiting, "$host:$port")
         connectionThread = Thread({
@@ -249,7 +258,13 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
 
     private fun forwardTouch(event: MotionEvent) {
         val active = session ?: return
-        if (root.width == 0 || root.height == 0) return
+        // Map against the mirrored picture, not the window: the letterbox around a portrait phone on
+        // a landscape head unit is not part of the phone, and a tap there must not become (0.02, 0.5).
+        val view = surfaceView
+        if (view.width == 0 || view.height == 0) return
+        val x = (event.x - view.left) / view.width
+        val y = (event.y - view.top) / view.height
+        if (x < 0f || x > 1f || y < 0f || y > 1f) return
         val action = when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> AaWire.TouchAction.DOWN
             MotionEvent.ACTION_MOVE -> AaWire.TouchAction.MOVE
@@ -260,10 +275,35 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
             AaMessages.Touch(
                 action = action,
                 pointerId = 0,
-                x = AaMessages.Touch.clamp(event.x / root.width),
-                y = AaMessages.Touch.clamp(event.y / root.height),
+                x = AaMessages.Touch.clamp(x),
+                y = AaMessages.Touch.clamp(y),
             ),
         )
+    }
+
+    /**
+     * Sizes the surfaces to the phone's aspect ratio and centres them.
+     *
+     * A SurfaceView filled to the window makes the decoder stretch the buffer to the window too, so a
+     * 9:16 phone arrives squashed on a 16:9 head unit. Matching the view to the stream keeps pixels
+     * square, and it is what makes [forwardTouch] able to map a tap onto the right place.
+     */
+    private fun applyVideoAspect() {
+        if (videoWidth <= 0 || videoHeight <= 0) return
+        val width = root.width
+        val height = root.height
+        if (width == 0 || height == 0) return
+        val scale = minOf(width.toFloat() / videoWidth, height.toFloat() / videoHeight)
+        val targetWidth = (videoWidth * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (videoHeight * scale).toInt().coerceAtLeast(1)
+        for (view in arrayOf<android.view.View>(surfaceView, rawView)) {
+            val params = (view.layoutParams as? FrameLayout.LayoutParams) ?: continue
+            if (params.width == targetWidth && params.height == targetHeight) continue
+            params.width = targetWidth
+            params.height = targetHeight
+            params.gravity = Gravity.CENTER
+            view.layoutParams = params
+        }
     }
 
     private val statusTick = object : Runnable {
@@ -271,22 +311,31 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
             val current = session
             val state = current?.state?.name ?: "IDLE"
             val fps = rawFrames
+            // One line, top-left: enough to tell live from frozen without covering the mirror.
             statusView.text = buildString {
-                append(host).append(':').append(port).append("  ").append(state).append('\n')
-                if (phoneName.isNotEmpty()) append(phoneName).append('\n')
-                append("h264 ").append(decoder.renderedFrames).append(" frames")
-                if (decoder.streamWidth > 0) append("  ").append(decoder.streamWidth).append('x').append(decoder.streamHeight)
-                append('\n')
-                if (streamSize.isNotEmpty()) append(streamSize).append('\n')
-                append("raw ").append(fps).append(" frames")
-                if (rawView.streamWidth > 0) append("  ").append(rawView.streamWidth).append('x').append(rawView.streamHeight)
-                if (roundTripUs >= 0) append("  rtt ").append(roundTripUs / 1000).append("ms")
-                lastStats?.let { stats ->
-                    append('\n').append("phone ").append(stats.encodedFrames).append(" sent, ")
-                        .append(stats.droppedFrames).append(" dropped, last ").append(stats.lastFrameBytes).append('B')
+                append(host).append(':').append(port).append("  ").append(state)
+                if (phoneName.isNotEmpty()) append("  ").append(phoneName)
+                append("  h264 ").append(decoder.renderedFrames).append('f')
+                if (decoder.streamWidth > 0) {
+                    append(' ').append(decoder.streamWidth).append('x').append(decoder.streamHeight)
                 }
+                if (fps > 0) append("  raw ").append(fps).append('f')
+                if (roundTripUs >= 0) append("  ").append(roundTripUs / 1000).append("ms")
             }
-            if (state == AaSessionState.STREAMING.name) hintView.visibility = View.INVISIBLE
+            if (state == AaSessionState.STREAMING.name) {
+                hintView.visibility = View.INVISIBLE
+                // The driver wants the phone's screen, not diagnostics: drop the strip once the
+                // picture has been up long enough to look settled.
+                val now = SystemClock.elapsedRealtime()
+                if (statsHiddenAt == 0L) {
+                    statsHiddenAt = now
+                } else if (statusView.visibility == View.VISIBLE && now - statsHiddenAt > STATS_VISIBLE_MS) {
+                    statusView.visibility = View.GONE
+                }
+            } else {
+                statsHiddenAt = 0L
+                statusView.visibility = View.VISIBLE
+            }
             handler.postDelayed(this, 500)
         }
     }
@@ -306,10 +355,14 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
 
     override fun onEstablished(hello: AaMessages.Hello, ack: AaMessages.HelloAck?) {
         phoneName = "${hello.deviceName} ${hello.width}x${hello.height}"
-        streamSize = "phone ${hello.width}x${hello.height} @${hello.densityDpi}dpi"
+        videoWidth = hello.width
+        videoHeight = hello.height
         runOnUiThread {
             hintView.visibility = View.INVISIBLE
+            statsHiddenAt = 0L
+            statusView.visibility = View.VISIBLE
             if (hello.codec == AaWire.Codec.H264) surfaceView.visibility = View.VISIBLE
+            applyVideoAspect()
         }
     }
 
@@ -329,9 +382,7 @@ class AaReceiverActivity : Activity(), AaSession.Listener {
         }
     }
 
-    override fun onStats(stats: AaMessages.Stats) {
-        lastStats = stats
-    }
+    override fun onStats(stats: AaMessages.Stats) = Unit
 
     override fun onRoundTripUs(micros: Long) {
         roundTripUs = micros

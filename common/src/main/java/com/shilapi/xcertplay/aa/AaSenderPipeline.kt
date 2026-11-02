@@ -1,9 +1,11 @@
 package com.shilapi.xcertplay.aa
 
 import android.graphics.Color
+import android.hardware.display.DisplayManager
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.media.projection.MediaProjection
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
@@ -18,18 +20,21 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.Deflater
 
 /**
- * The phone half's producer: renders a test pattern and encodes it, either as H.264 through a
- * `MediaCodec` input surface or as deflated ARGB for devices whose encoder refuses to start.
+ * The phone half's producer. With a [MediaProjection] it encodes the real screen; without one it
+ * falls back to a synthesised test pattern.
  *
- * The pattern is deliberately unmistakable — a moving bar, the frame counter, and a square that
- * follows the head unit's touch — because the point of the loopback pair is to prove three things at
- * a glance: video flows, it is live, and input comes back.
+ * The projection path is the shortest one available: the `VirtualDisplay` mirrors straight into the
+ * encoder's input surface, so frames never touch the CPU and there is no EGL swap loop to pace — the
+ * display pushes a frame whenever the screen changes, which is exactly what an encoder wants. The
+ * pattern path exists because screen capture needs a per-session consent the driver can refuse, and a
+ * black screen with no explanation is worse than an obviously fake image.
  */
 internal class AaSenderPipeline(
     private val codecKind: Int,
     private val width: Int,
     private val height: Int,
     private val fps: Int,
+    private val densityDpi: Int,
     private val sink: Sink,
     private val log: (String) -> Unit,
 ) {
@@ -43,6 +48,19 @@ internal class AaSenderPipeline(
     private val running = AtomicBoolean(false)
     private var worker: Thread? = null
     private var encoder: MediaCodec? = null
+
+    /**
+     * Set before [start]. When present the H.264 path mirrors this projection; when absent it draws
+     * the test pattern. Kept mutable so the consent result that arrives after the socket connects
+     * can still be used by the next session.
+     */
+    @Volatile
+    var projection: MediaProjection? = null
+
+    /** "screen" or "pattern"; read by the UI so the driver knows what is on the head unit. */
+    @Volatile
+    var source: String = "pattern"
+        private set
 
     @Volatile
     private var touchX = 0.5f
@@ -118,27 +136,91 @@ internal class AaSenderPipeline(
         created.start()
         encoder = created
 
-        val gl = EglWindow(inputSurface)
         val info = MediaCodec.BufferInfo()
+        val active = projection
+        if (active != null && mirror(created, inputSurface, info, active)) {
+            inputSurface.release()
+            return
+        }
+        if (active != null) log("projection unavailable, falling back to the test pattern")
+        pattern(created, inputSurface, info)
+        inputSurface.release()
+    }
+
+    /**
+     * Mirrors the real screen into the encoder.
+     *
+     * Returns false when the display cannot be created, which is the signal to fall back to the
+     * pattern instead of leaving the driver with a dead stream.
+     */
+    private fun mirror(
+        codec: MediaCodec,
+        inputSurface: Surface,
+        info: MediaCodec.BufferInfo,
+        active: MediaProjection,
+    ): Boolean {
+        val virtual = try {
+            active.createVirtualDisplay(
+                "diplay-aa",
+                width,
+                height,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                inputSurface,
+                null,
+                null,
+            )
+        } catch (error: Throwable) {
+            log("createVirtualDisplay failed: ${error.message}")
+            return false
+        } ?: return false
+        source = "screen"
+        log("mirroring ${width}x${height} @$densityDpi dpi")
+        try {
+            // No pacing loop: the display submits a frame per screen update, and pulling whatever the
+            // encoder has ready is all this side has to do.
+            while (running.get()) {
+                drain(codec, info)
+                Thread.sleep(5)
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } finally {
+            try {
+                virtual.release()
+            } catch (_: Throwable) {
+            }
+        }
+        return true
+    }
+
+    /** The synthetic fallback: a moving bar, a hue sweep, and a marker that follows the head unit. */
+    private fun pattern(codec: MediaCodec, inputSurface: Surface, info: MediaCodec.BufferInfo) {
+        source = "pattern"
+        val gl = EglWindow(inputSurface)
         val frameIntervalNanos = 1_000_000_000L / fps
         var nextFrame = System.nanoTime()
         val startedAt = System.nanoTime()
 
-        while (running.get()) {
-            val now = System.nanoTime()
-            if (now < nextFrame) {
-                // Keep the encoder's output flowing while waiting for the next frame.
-                drain(created, info)
-                Thread.sleep(1)
-                continue
+        try {
+            while (running.get()) {
+                val now = System.nanoTime()
+                if (now < nextFrame) {
+                    // Keep the encoder's output flowing while waiting for the next frame.
+                    drain(codec, info)
+                    Thread.sleep(1)
+                    continue
+                }
+                nextFrame = now + frameIntervalNanos
+                drawPattern(now - startedAt)
+                gl.present(now)
+                drain(codec, info)
             }
-            nextFrame = now + frameIntervalNanos
-            drawPattern(now - startedAt)
-            gl.present(now)
-            drain(created, info)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } finally {
+            gl.release()
         }
-        gl.release()
-        inputSurface.release()
     }
 
     /**

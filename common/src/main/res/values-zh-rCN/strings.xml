@@ -823,4 +823,10 @@
     <string name="aa_sender_waiting">正在端口 %1$d 等待车机连接</string>
     <string name="aa_sender_streaming">正在向车机推流</string>
     <string name="aa_mode_needs_api">安卓模式需要 Android 5.0 及以上</string>
+    <string name="aa_projection_notification">正在镜像本机屏幕</string>
+    <string name="aa_projection_stop">停止</string>
+    <string name="aa_projection_denied">屏幕录制被拒绝，改为发送测试画面</string>
+    <string name="aa_projection_waiting">正在等待屏幕录制授权</string>
+    <string name="aa_injector_label">DiPlay 安卓模式触控</string>
+    <string name="aa_injector_description">允许车机在镜像屏幕时点击和滑动这台手机。</string>
 </resources>

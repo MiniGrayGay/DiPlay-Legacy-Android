@@ -22,10 +22,16 @@ Two halves of one protocol, both in this repository:
 ```
 phone (sender)                                  head unit (receiver)
 AaSenderActivity                                AaReceiverActivity
-  AaSenderPipeline                                AaVideoDecoder (MediaCodec → SurfaceView)
-    H.264 via MediaCodec input surface              AaRawFrameView  (raw fallback)
-    or raw ARGB + Deflater                        touch → normalised → TOUCH
+  AaProjectionService (foreground,             AaVideoDecoder (MediaCodec → SurfaceView)
+    type=mediaProjection)                        AaRawFrameView  (raw fallback)
+  AaSenderPipeline                                touch → video rect → normalised → TOUCH
+    Real screen: VirtualDisplay
+      → MediaCodec input surface
+    Fallback:    EGL test pattern
+    or raw ARGB + Deflater
   AaSession(SENDER)  ──── AaWire frames ────►   AaSession(RECEIVER)
+  AaTouchInjector (AccessibilityService)
+      ◄──────────── TOUCH ────────────
 ```
 
 * `shared/.../mirroring/aa/AaWire.kt` — an 18-byte header (magic, version, type, codec, pts, length)
@@ -39,6 +45,20 @@ AaSenderActivity                                AaReceiverActivity
   than shown late.
 * `common/.../aa/SocketAaDuplex.kt` — the TCP implementation of `AaDuplex`. The same interface is
   what a USB bulk endpoint implements once the accessory handshake lands.
+* `common/.../aa/AaProjectionService.kt` — a foreground service of type `mediaProjection` that holds
+  the screen-capture grant. The order matters: this app targets 37, and Android 14+ throws from
+  `getMediaProjection` unless a foreground service of that type is already running. Older releases
+  only need the plain foreground call, so the branch is on API 29.
+* `common/.../aa/AaTouchInjector.kt` — an accessibility service that turns incoming touches into
+  `dispatchGesture` calls on this phone. `INJECT_EVENTS` is a signature permission and the shell
+  `input` command is not reachable from an app, so accessibility is the only route available without
+  root. Consequences: the driver must enable it once, and the mirror is view-only while it is off
+  (the sender prints `inject off` rather than pretending the tap worked).
+
+Screen capture is a straight line through the GPU: `VirtualDisplay` mirrors into the encoder's own
+input surface, so frames never touch the CPU and there is no EGL swap loop to pace. Video dimensions
+are derived from the physical display at the long edge of 640 px and rounded to even numbers, so a
+9:16 phone arrives as 360x640 rather than squashed into 16:9.
 
 Only one side listens: the phone does, on port 8790 (deliberately not 5277, so a real Android Auto
 phone cannot collide with it). The head unit connects and retries every two seconds, so either end
@@ -73,6 +93,17 @@ adb -s emulator-5554 forward tcp:8790 tcp:8790
 # 3. Start the sender first, then the receiver. 10.0.2.2 is the emulator's view of the host.
 adb -s emulator-5554 shell am start -n com.shihab.diplay.hudtest/com.shilapi.xcertplay.aa.AaSenderActivity
 adb -s emulator-5556 shell am start -n com.shihab.diplay.hudtest/com.shilapi.xcertplay.aa.AaReceiverActivity
+
+# 4. Only while the sender is running: accept its consent dialog (tap "START NOW").
+#    Coordinates are physical pixels; `wm size` reports 1080x1920 on these AVDs.
+adb -s emulator-5554 shell input tap 849 1071
+
+# 5. Enable touch injection. Reinstalling the APK clears this, so it has to be repeated
+#    after every install, and it is the step that makes the mirror controllable.
+adb -s emulator-5554 shell settings put secure enabled_accessibility_services \
+  com.shihab.diplay.hudtest/com.shilapi.xcertplay.aa.AaTouchInjector
+adb -s emulator-5554 shell settings put secure accessibility_enabled 1
+adb -s emulator-5554 shell dumpsys accessibility | grep capabilities   # 32 = canPerformGestures
 ```
 
 `--ei aa_sender_codec 0` switches the sender to the raw path. Both activities are also reachable
@@ -81,15 +112,27 @@ through the UI: **Connection → Connection setup → Android mode receiver** on
 manifest; `mobile/src/debug/AndroidManifest.xml` exports them for debug builds only so the commands
 above work.
 
-What to look for on the receiver: the overlay reads `STREAMING`, a rising `h264 … frames` counter
-with the resolution, and an `rtt` in single-digit milliseconds. The picture is a test pattern — a
-moving white bar and a square that follows the head unit's finger. Touching the receiver moves the
-square *and* prints the normalised coordinates in the sender's bottom line, which is the proof that
-input went back.
+What to look for on the receiver: the strip reads `STREAMING`, a rising `h264 … frames` counter with
+the resolution, and an `rtt` in single-digit milliseconds, then fades after six seconds so the picture
+is unobstructed. The phone's own screen appears in the middle, letterboxed to its aspect ratio, and
+taps on the receiver land on the phone — pressing **Network & internet** in the mirrored Settings
+opens that page on the phone.
 
-Measured on 2026-11-01, `JingCang_Test_API28` as sender and `JingCang_Android11_API30` as receiver,
-640x360 at 15 fps: 15 KiB/s at H.264 (~2.7 KiB per frame), ~5.9 KiB per frame on the raw path,
-`rtt` 8–12 ms, no dropped frames.
+If the consent dialog is dismissed, the sender says so on its status line and streams the test pattern
+instead (a moving bar, a hue sweep and a square that follows the head unit's finger). That fallback is
+deliberate: a dead black rectangle with no explanation is the worst outcome.
+
+Measured on 2026-11-02, `JingCang_Test_API28` as sender and `JingCang_Android11_API30` as receiver,
+real screen at 360x640, ~15 fps: 2–3 KiB per frame, `rtt` 17–33 ms, tap and 500 px swipe both landed
+in the right place on the phone. On 2026-11-01 the same pair carried the 640x360 test pattern at
+8–12 ms rtt with no dropped frames.
+
+The Android 14 path was checked separately on `JingCang_Android14_API34`, because that release is the
+one that refuses `getMediaProjection` without a matching foreground service. Logs show
+`Background started FGS: Allowed … act=…PROJECTION_START` followed by `mirroring 360x640 @420 dpi`,
+and the head unit reproduced the phone's Settings home and the follow-up **Network & internet** page
+after a tap. A handful of `decode dropped: input queue full` lines appear while the decoder warms up;
+they are the intended degradation (the newest frame wins) rather than an error.
 
 ## Settings, defaults and fallback
 
@@ -99,8 +142,15 @@ Measured on 2026-11-01, `JingCang_Test_API28` as sender and `JingCang_Android11_
   running CarPlay session, it only decides what the next attach starts.
 * Android mode needs API 21 for `MediaCodec` surface input and `MediaProjection`; below that the
   entries are replaced by one explanatory line.
+* Screen capture consent is per session and per launch: the dialog comes back after a restart, which
+  is how Android keeps an app from recording forever. Refusing it is not fatal — the sender falls back
+  to the test pattern and says why.
+* Touch injection needs the accessibility service enabled once. `aa_injector_description` is what
+  Settings shows the driver; the service requests `canPerformGestures` and reads no window content.
 * H.264 is the default codec. The raw path exists because a device with a broken AVC encoder should
-  still show a picture; the receiver picks the path per frame, so no restart is involved.
+  still show a picture; the receiver picks the path per frame, so no restart is involved. The raw path
+  always sends the test pattern, because reading back a projected screen per frame would mean a
+  `PixelCopy` round trip per frame.
 * `usb_device_filter.xml` still lists Apple, CH341 and Bluetooth only. Adding an Android vendor entry
   would offer DiPlay for every phone the driver plugs in — the "误触发" risk in the plan — so
   classification keeps running on the attach broadcast the app already receives while open.
@@ -124,5 +174,11 @@ and starting the receiver. Notable decisions, all covered by tests:
   the attach broadcast but waits on TCP.
 * Android Auto's real wire protocol (protobuf over TLS, service discovery, media/audio/sensor
   channels), which is what makes a retail phone work.
+* Rotation while streaming. The video size is fixed when the session starts, so turning the phone
+  sideways mid-session keeps the old shape until the next connection. `VirtualDisplay.resize` plus an
+  encoder restart is the fix; neither is wired up.
+* Multi-touch. `AaMessages.Touch` carries one pointer; pinch-zoom will not work until the message
+  grows a pointer list.
 * Audio routing and the media keys the CarPlay path already forwards.
-* The M5 matrix on real cars.
+* The M5 matrix on real cars. Emulator testing cannot cover the USB attach path at all: an AVD cannot
+  present itself as a USB device.

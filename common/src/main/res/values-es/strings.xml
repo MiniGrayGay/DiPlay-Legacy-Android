@@ -746,4 +746,10 @@
     <string name="aa_sender_waiting">Esperando al coche en el puerto %1$d</string>
     <string name="aa_sender_streaming">Transmitiendo al coche</string>
     <string name="aa_mode_needs_api">El modo Android requiere Android 5.0 o superior</string>
+    <string name="aa_projection_notification">Duplicando la pantalla de este teléfono</string>
+    <string name="aa_projection_stop">Detener</string>
+    <string name="aa_projection_denied">Se rechazó la captura de pantalla; se envía el patrón de prueba</string>
+    <string name="aa_projection_waiting">Esperando el permiso de captura de pantalla</string>
+    <string name="aa_injector_label">Toques del modo Android de DiPlay</string>
+    <string name="aa_injector_description">Permite que el equipo del coche toque y deslice en este teléfono mientras se duplica su pantalla.</string>
 </resources>

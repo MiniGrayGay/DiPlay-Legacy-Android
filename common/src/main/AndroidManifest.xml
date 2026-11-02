@@ -19,6 +19,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android mode mirrors the phone screen, and 34+ refuses the projection without this. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -224,6 +226,26 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/usb_auto_confirm_service_config" />
+        </service>
+
+        <!-- Android mode: keeps the screen capture alive once the driver leaves the sender UI. -->
+        <service
+            android:name="com.shilapi.xcertplay.aa.AaProjectionService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- Android mode: turns the head unit's touches into gestures on this phone. -->
+        <service
+            android:name="com.shilapi.xcertplay.aa.AaTouchInjector"
+            android:exported="true"
+            android:label="@string/aa_injector_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/aa_touch_injector" />
         </service>
     </application>
 

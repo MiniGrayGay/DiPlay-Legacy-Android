@@ -746,4 +746,10 @@
     <string name="aa_sender_waiting">Ожидание автомобиля на порту %1$d</string>
     <string name="aa_sender_streaming">Передача в автомобиль</string>
     <string name="aa_mode_needs_api">Android-режиму нужен Android 5.0 или новее</string>
+    <string name="aa_projection_notification">Идёт зеркалирование экрана телефона</string>
+    <string name="aa_projection_stop">Остановить</string>
+    <string name="aa_projection_denied">Запись экрана отклонена; отправляется тестовое изображение</string>
+    <string name="aa_projection_waiting">Ожидание разрешения на запись экрана</string>
+    <string name="aa_injector_label">Касания в режиме Android DiPlay</string>
+    <string name="aa_injector_description">Позволяет головному устройству нажимать и проводить по этому телефону во время зеркалирования экрана.</string>
 </resources>
