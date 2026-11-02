@@ -157,6 +157,15 @@
             android:exported="false"
             android:theme="@style/Theme.Xcertplay" />
 
+        <!-- Android mode with nothing installed on the phone: the head unit drives the phone's own
+             adbd. Landscape because the phone's picture is what the driver is looking at. -->
+        <activity
+            android:name="com.shilapi.xcertplay.adb.AdbMirrorActivity"
+            android:configChanges="density|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.Xcertplay" />
+
         <activity
             android:name="com.shilapi.xcertplay.MainActivity"
             android:exported="false"

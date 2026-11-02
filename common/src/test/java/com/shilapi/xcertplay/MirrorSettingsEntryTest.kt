@@ -6,6 +6,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import com.shilapi.xcertplay.aa.AaPreferences
+import com.shilapi.xcertplay.adb.AdbPreferences
 import com.shilapi.xcertplay.host.R
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -34,21 +35,22 @@ class MirrorSettingsEntryTest {
     }
 
     @Test fun receiverIsOfferedOnTheConnectionCardWithItsAddress() {
-        AaPreferences.saveReceiverHost(context, "192.168.1.40")
-        AaPreferences.saveReceiverPort(context, 8790)
+        AdbPreferences.savePhoneHost(context, "192.168.1.40")
+        AdbPreferences.savePhonePort(context, 5555)
         val screen = openCategory(R.string.connection)
 
         val labels = texts(screen).map { it.text.toString() }
         assertTrue(labels.toString(), labels.contains(screen.getString(R.string.aa_receiver_button)))
         assertTrue(
             labels.toString(),
-            labels.contains(screen.getString(R.string.aa_receiver_address_button, "192.168.1.40:8790")),
+            labels.contains(screen.getString(R.string.aa_receiver_address_button, "192.168.1.40:5555")),
         )
     }
 
-    @Test fun receiverFallsBackToTheEmulatorHostByDefault() {
+    /** With no address typed, the entry points at this head unit's own adbd — the self-test loop. */
+    @Test fun receiverDefaultsToTheHeadUnitsOwnAdbd() {
         val screen = openCategory(R.string.connection)
-        val expected = "${AaPreferences.DEFAULT_HOST}:${AaPreferences.DEFAULT_PORT}"
+        val expected = "127.0.0.1:${AdbPreferences.DEFAULT_PORT}"
         assertTrue(
             texts(screen).map { it.text.toString() }
                 .contains(screen.getString(R.string.aa_receiver_address_button, expected)),

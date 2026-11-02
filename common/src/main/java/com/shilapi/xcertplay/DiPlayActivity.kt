@@ -68,8 +68,6 @@ import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotTethering
 import com.shilapi.xcertplay.network.WifiP2pChannels
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
-import com.shilapi.xcertplay.aa.AaPreferences
-import com.shilapi.xcertplay.aa.AaReceiverActivity
 import com.shilapi.xcertplay.aa.AaSenderActivity
 import com.shilapi.xcertplay.mirroring.PhoneTypePreference
 import com.shilapi.xcertplay.settings.ConnectionSettingsSection
@@ -1341,14 +1339,17 @@ class DiPlayActivity : ComponentActivity() {
             // Android mode is experimental and, until the USB accessory path exists, started by hand.
             // The address is the phone that will send the picture; on a workstation pair it is the
             // adb-forwarded port of the sender emulator.
+            // Android mode with nothing installed on the phone: the head unit drives the phone's own
+            // adbd. The address below is only for a phone whose adbd is on the network.
             if (Build.VERSION.SDK_INT >= 21) {
                 card.addView(button(getString(R.string.aa_receiver_button), false) {
-                    startActivity(AaReceiverActivity.intent(this@DiPlayActivity))
+                    startActivity(com.shilapi.xcertplay.adb.AdbMirrorActivity.intent(this@DiPlayActivity))
                 }, matchButton(12, 60))
                 card.addView(button(
                     getString(
                         R.string.aa_receiver_address_button,
-                        "${AaPreferences.receiverHost(this@DiPlayActivity)}:${AaPreferences.receiverPort(this@DiPlayActivity)}",
+                        "${com.shilapi.xcertplay.adb.AdbPreferences.phoneHost(this@DiPlayActivity)}:" +
+                            "${com.shilapi.xcertplay.adb.AdbPreferences.phonePort(this@DiPlayActivity)}",
                     ),
                     false,
                 ) { promptAaReceiverAddress() }, matchButton(12, 60))
@@ -4526,9 +4527,10 @@ class DiPlayActivity : ComponentActivity() {
      * so a driver typing a LAN address does not have to remember the port.
      */
     private fun promptAaReceiverAddress() {
-        val current = "${AaPreferences.receiverHost(this)}:${AaPreferences.receiverPort(this)}"
+        val adb = com.shilapi.xcertplay.adb.AdbPreferences
+        val current = "${adb.phoneHost(this)}:${adb.phonePort(this)}"
         val input = EditText(this).apply {
-            hint = "${AaPreferences.DEFAULT_HOST}:${AaPreferences.DEFAULT_PORT}"
+            hint = "127.0.0.1:${adb.DEFAULT_PORT}"
             setText(current)
             setSingleLine()
             setSelection(text.length)
@@ -4544,10 +4546,10 @@ class DiPlayActivity : ComponentActivity() {
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 val parts = input.text.toString().trim().split(':')
                 val address = parts.getOrNull(0)?.trim().orEmpty()
-                val port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: AaPreferences.receiverPort(this)
+                val port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: adb.phonePort(this)
                 if (address.isNotEmpty() && port in 1..65535) {
-                    AaPreferences.saveReceiverHost(this, address)
-                    AaPreferences.saveReceiverPort(this, port)
+                    adb.savePhoneHost(this, address)
+                    adb.savePhonePort(this, port)
                     render()
                 } else {
                     toast(getString(R.string.aa_receiver_address_hint))

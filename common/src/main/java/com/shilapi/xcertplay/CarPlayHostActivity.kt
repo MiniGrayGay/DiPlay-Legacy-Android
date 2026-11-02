@@ -1177,10 +1177,10 @@ class CarPlayHostActivity : ComponentActivity() {
             } else if (controller == null) {
                 requestStartupPrerequisites()
             }
-            // An Android phone now has somewhere to go: the experimental receiver in the `aa`
-            // package. Without it the attach is logged and CarPlay keeps working as before.
-            MirrorDecision.START_ANDROID_AUTO -> onAndroidPhoneAttached(startReceiver = true)
-            MirrorDecision.ANDROID_RECEIVER_MISSING -> onAndroidPhoneAttached(startReceiver = false)
+            // An Android phone is driven through its own adbd: nothing is installed on it, and the
+            // phone-side binaries (screenrecord, input) do the work.
+            MirrorDecision.START_ANDROID_AUTO -> onAndroidPhoneAttached(attachedPhone(intent), startReceiver = true)
+            MirrorDecision.ANDROID_RECEIVER_MISSING -> onAndroidPhoneAttached(attachedPhone(intent), startReceiver = false)
             MirrorDecision.IGNORE_BY_SETTING -> appendLog("USB device ignored by the phone type setting")
             MirrorDecision.IGNORE_NOT_A_PHONE, null -> Unit
         }
@@ -1194,20 +1194,30 @@ class CarPlayHostActivity : ComponentActivity() {
         return MirrorUsbAttach.decision(this, device)
     }
 
-    private fun onAndroidPhoneAttached(startReceiver: Boolean) {
+    private fun onAndroidPhoneAttached(device: UsbDevice?, startReceiver: Boolean) {
         if (!startReceiver) {
             appendLog("Android phone attached; this build has no Android Auto receiver yet")
             if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
             Toast.makeText(this, getString(R.string.settings_phone_type_android_unavailable), Toast.LENGTH_LONG).show()
-            if (AskEnableUsbDebugging.needed(this)) AskEnableUsbDebugging.show(this)
             return
         }
-        appendLog("Android phone attached; starting the Android mode receiver")
-        // The stream itself arrives over the phone's own transport, which needs USB debugging on
-        // today's hardware. Ask first, then open the receiver so it is already waiting.
-        if (AskEnableUsbDebugging.needed(this)) AskEnableUsbDebugging.show(this)
-        startActivity(com.shilapi.xcertplay.aa.AaReceiverActivity.intent(this))
+        if (device == null) return
+        // The phone exposes its ADB interface only while USB debugging is on. That interface is the
+        // entire transport, so its absence is the one thing the driver has to fix — and the hint has
+        // to be about the phone, not about this head unit's own debugging switch.
+        if (com.shilapi.xcertplay.adb.UsbAdbTransport.adbInterfaceIndex(device) < 0) {
+            appendLog("Android phone attached without an ADB interface; USB debugging is off")
+            if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
+            Toast.makeText(this, getString(R.string.settings_usb_debugging_required_message), Toast.LENGTH_LONG).show()
+            return
+        }
+        appendLog("Android phone attached; starting Android mode over ADB")
+        startActivity(com.shilapi.xcertplay.adb.AdbMirrorActivity.usbIntent(this, device.deviceId))
     }
+
+    /** The attached USB device, when this intent is an attach broadcast for one. */
+    private fun attachedPhone(intent: Intent): UsbDevice? =
+        androidx.core.content.IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
 
     private fun isIphoneUsbAttachment(intent: Intent): Boolean =
         mirrorAttachment(intent) == MirrorDecision.START_CARPLAY
