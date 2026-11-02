@@ -159,6 +159,9 @@ AARE（开源手机侧 AA 实现）用 **TOFU（Trust On First Use）**：
 - **证书 notBefore 回退一天**：车机常无网络、时钟偏慢，证书"尚未生效"会被单独拒成 `-23`。
 - **每台车机各自生成证书**：共用私钥一旦被信任，任何人都能冒充这台车机。
 - **加密后仍分通道**：帧头在加密外，对端要先按通道路由再解密，所以一条消息对应一条 TLS 记录，不能把多条消息混进一个记录。
+- **加密消息的 ID 在密文里**：判帧层只能对明文消息按"2 字节 ID + 消息体"拆分。加密消息的载荷是密封记录，头两字节是 `0x17 0x03`，当成 ID 剥掉会让引擎报 `Unrecognized record version (D)TLS-0.46` —— 报错在 TLS，根因在判帧。（这一条是实测踩出来的）
+- **`SSLEngine` 要重写 `chooseEngine*Alias`**：`X509ExtendedKeyManager` 的 socket 版和 engine 版是两套方法。只重写 `chooseClientAlias` / `chooseServerAlias` 时，`SSLEngine` 路径基类返回 null，两端都不出示证书，握手报 `no cipher suites in common` —— 报错指向套件列表，根因是没给身份。
+- **别用 `PipedInputStream` 做回环传输**：它靠"最后一次写入的线程是否存活"判断断流。模拟端在握手线程写完即退出、再从另一个线程发数据时，中间的读会误报 `Write end dead`。换成显式 `ReentrantLock` + `Condition` 的字节管道，断流只由 `close` 触发。
 
 ---
 
