@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.aap
 
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
 import java.net.Socket
@@ -137,37 +138,59 @@ class AapTlsStream(
     /**
      * Encrypts one message and writes it.
      *
-     * The plaintext must fit in a single frame: an encrypted record that then needed splitting
-     * would leave the peer without a way to tell two messages apart. Callers with big payloads
-     * (video, audio) are expected to fragment at the media layer, which is where the protocol
-     * already has a packet boundary.
+     * A message may be larger than one frame — a video keyframe is, routinely — and it has to stay
+     * *one* message on the wire, because the peer's reassembly is what gives it a boundary. So the
+     * plaintext is sealed in chunks, the sealed records are concatenated, and the result goes out
+     * through the frame writer, which splits it into FIRST/LAST fragments carrying the total size.
+     * The peer reassembles those into a single body, unwraps every record in it, and gets exactly
+     * the message that was written here.
+     *
+     * Splitting after sealing instead (one record, one frame, repeated) would produce several
+     * messages on the peer, and each of them would decrypt to a fragment of the original.
      */
     fun write(message: AapMessage, flush: Boolean = false) {
         check(established) { "TLS handshake has not completed" }
         val plaintext = AapFrame.plaintext(message.id, message.body)
-        if (plaintext.size > AapFrame.MAX_PAYLOAD) {
-            throw IllegalArgumentException(
-                "encrypted message of ${plaintext.size} bytes exceeds ${AapFrame.MAX_PAYLOAD}; fragment above this layer",
-            )
-        }
-        var source = ByteBuffer.wrap(plaintext)
-        while (source.hasRemaining()) {
-            netOut.clear()
-            val result = engine.wrap(source, netOut)
-            when (result.status) {
-                SSLEngineResult.Status.BUFFER_OVERFLOW -> {
-                    netOut = grow(netOut, engine.session.packetBufferSize)
-                    continue
-                }
+        val sealed = ByteArrayOutputStream(plaintext.size + 128)
+        var offset = 0
+        while (offset < plaintext.size) {
+            // One record per chunk; keeping the chunk under a frame leaves room for the TLS header
+            // and tag so the sealed output needs no further thought here.
+            val length = minOf(SEAL_CHUNK, plaintext.size - offset)
+            val source = ByteBuffer.wrap(plaintext, offset, length)
+            while (source.hasRemaining()) {
+                netOut.clear()
+                val result = engine.wrap(source, netOut)
+                when (result.status) {
+                    SSLEngineResult.Status.BUFFER_OVERFLOW -> {
+                        netOut = grow(netOut, engine.session.packetBufferSize)
+                        continue
+                    }
 
-                SSLEngineResult.Status.CLOSED -> throw IOException("TLS engine closed while writing")
-                else -> Unit
+                    SSLEngineResult.Status.CLOSED -> throw IOException("TLS engine closed while writing")
+                    else -> Unit
+                }
+                netOut.flip()
+                if (netOut.hasRemaining()) sealed.write(bufferOf(netOut))
             }
-            netOut.flip()
-            if (netOut.hasRemaining()) {
-                writer.write(bufferOf(netOut), message.channel, false, true, flush)
-            }
+            offset += length
         }
+        // The control bit is part of the frame header, not of the sealed record, so it has to be
+        // carried over here: a channel open request written with it cleared arrives looking like an
+        // ordinary service message and is dropped without a reply.
+        writer.write(sealed.toByteArray(), message.channel, message.control, true, flush)
+    }
+
+    /**
+     * Writes one message **without** encrypting it.
+     *
+     * Exactly one message belongs here: `AUTH_COMPLETE`. The phone turns decryption on when it
+     * receives that message, so it has to arrive in the clear — sending it encrypted makes the
+     * peer fail with "encrypted frame before TLS is up", which reads like a handshake bug and is
+     * not. Everything after it goes through [write].
+     */
+    fun writeCleartext(message: AapMessage, flush: Boolean = true) {
+        writer.write(message, flush)
     }
 
     /**
@@ -310,6 +333,13 @@ class AapTlsStream(
         val EMPTY: ByteBuffer = ByteBuffer.allocate(0)
         const val MAX_ROUNDS = 200
         const val MAX_BUFFER = 4 * 1024 * 1024
+
+        /**
+         * Plaintext sealed per TLS record. Well under a frame on purpose: a record carries a 5-byte
+         * header, a 16-byte tag and possibly a padding byte, and the sealed output has to stay
+         * splittable by the frame writer without a second pass.
+         */
+        const val SEAL_CHUNK = 8 * 1024
     }
 }
 

@@ -854,6 +854,11 @@
     <string name="aa_receiver_address_title">Phone address for Android mode</string>
     <string name="aa_receiver_address_hint">host:port of the phone that sends the picture</string>
     <string name="aa_sender_button">Android mode sender (test phone)</string>
+    <!-- Android Auto protocol (AAP): the phone runs its own sender, the car draws the phone's home
+         screen. Separate from the captured "Android mode" above, which needs no phone app. -->
+    <string name="aap_receiver_button">Android Auto link · port %1$d</string>
+    <string name="aap_receiver_hint">The car waits for a phone on this port. Install the sender app on the Android phone, point it at this car\'s address, and the phone\'s own home screen appears here with the car\'s touch and keys driving it.</string>
+    <string name="aap_receiver_needs_api">The Android Auto link needs Android 5.0 or newer</string>
     <string name="aa_receiver_waiting">Waiting for the phone sender at %1$s</string>
     <string name="aa_receiver_retrying">Disconnected: %1$s · retrying</string>
     <string name="aa_sender_title">Android mode · sender</string>

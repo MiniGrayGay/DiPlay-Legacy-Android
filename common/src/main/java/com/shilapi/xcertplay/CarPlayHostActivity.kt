@@ -1202,17 +1202,11 @@ class CarPlayHostActivity : ComponentActivity() {
             return
         }
         if (device == null) return
-        // The phone exposes its ADB interface only while USB debugging is on. That interface is the
-        // entire transport, so its absence is the one thing the driver has to fix — and the hint has
-        // to be about the phone, not about this head unit's own debugging switch.
-        if (com.shilapi.xcertplay.adb.UsbAdbTransport.adbInterfaceIndex(device) < 0) {
-            appendLog("Android phone attached without an ADB interface; USB debugging is off")
-            if (DiPlayPreferences.phoneType(this) != PhoneTypePreference.ANDROID_ONLY) return
-            Toast.makeText(this, getString(R.string.settings_usb_debugging_required_message), Toast.LENGTH_LONG).show()
-            return
-        }
-        appendLog("Android phone attached; starting Android mode over ADB")
-        startActivity(com.shilapi.xcertplay.adb.AdbMirrorActivity.usbIntent(this, device.deviceId))
+        // An Android phone is served over Android Auto, not over its adbd. That means USB debugging
+        // has to be *off* the critical path: the transport is AOA, which any phone speaks once it is
+        // plugged into a host, so there is nothing here for the driver to enable first.
+        appendLog("Android phone attached; starting Android Auto over USB")
+        startActivity(AapProjectionActivity.intentForUsb(this, device.deviceId))
     }
 
     /** The attached USB device, when this intent is an attach broadcast for one. */

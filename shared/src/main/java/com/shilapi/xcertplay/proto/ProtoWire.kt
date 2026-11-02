@@ -37,6 +37,34 @@ internal object ProtoWire {
         }
 
         /**
+         * `int64` field.
+         *
+         * AAP's ping carries a microsecond timestamp here, and a `System.nanoTime()/1000` value is
+         * already past what an `int32` holds, so the wide form is the one that matters.
+         */
+        fun int64(field: Int, value: Long): Writer {
+            tag(field, TYPE_VARINT)
+            varint(value)
+            return this
+        }
+
+        /**
+         * `uint64` field. Same wire form as [int64]; the distinction only matters for values with
+         * the top bit set, which a microsecond clock will not reach for 292 000 years.
+         */
+        fun uint64(field: Int, value: Long): Writer = int64(field, value)
+
+        /** Fixed 32-bit little-endian field (`fixed32` / `sfixed32`). */
+        fun fixed32(field: Int, value: Int): Writer {
+            tag(field, TYPE_FIXED32)
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+            return this
+        }
+
+        /**
          * `sint32`: zigzag. Negative numbers are common here (`priority` is often -1), and plain
          * `int32` would spend ten bytes on each of them.
          */

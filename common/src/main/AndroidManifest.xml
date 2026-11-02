@@ -166,6 +166,21 @@
             android:screenOrientation="landscape"
             android:theme="@style/Theme.Xcertplay" />
 
+        <!-- Android mode over the real Android Auto protocol (AAP): an Android phone installs the
+             open source sender, this head unit is the receiver, and the driver gets a projected
+             home screen rather than a captured one. Exported so development can start it from the
+             command line with a host extra, which is how the emulator pair is driven. -->
+        <activity
+            android:name="com.shilapi.xcertplay.AapProjectionActivity"
+            android:configChanges="density|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:screenOrientation="fullSensor"
+            android:taskAffinity="${applicationId}.aap"
+            android:theme="@style/Theme.Xcertplay"
+            android:windowSoftInputMode="adjustResize" />
+
         <activity
             android:name="com.shilapi.xcertplay.MainActivity"
             android:exported="false"

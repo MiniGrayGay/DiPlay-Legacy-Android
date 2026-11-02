@@ -17,10 +17,10 @@ import com.shilapi.xcertplay.mirroring.UsbInterfaceIdentity
  */
 internal object MirrorUsbAttach {
     /**
-     * True since the experimental Android mode receiver landed in `common/.../aa`: the selector may
-     * now hand an Android phone to [com.shilapi.xcertplay.aa.AaReceiverActivity] instead of reporting
-     * that nothing can serve it. The USB accessory handshake itself still needs real hardware, so the
-     * receiver is started and then waits for the phone's stream.
+     * True since the Android Auto receiver landed in [com.shilapi.xcertplay.AapProjectionActivity]:
+     * the selector may now hand an Android phone to a real session instead of reporting that nothing
+     * can serve it. The USB accessory handshake still needs real hardware to exercise, so on a
+     * workstation the receiver is verified over TCP against the sender in `samples/aapphone`.
      */
     const val ANDROID_RECEIVER_AVAILABLE = true
 

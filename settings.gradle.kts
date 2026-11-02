@@ -31,3 +31,6 @@ include(":maphost")
 project(":maphost").projectDir = file("samples/maphost")
 include(":home")
 project(":home").projectDir = file("samples/home")
+// The phone side of Android Auto, as an app: a test peer for the head unit, not a product.
+include(":aapphone")
+project(":aapphone").projectDir = file("samples/aapphone")

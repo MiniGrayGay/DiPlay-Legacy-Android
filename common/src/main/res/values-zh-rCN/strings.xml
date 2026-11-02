@@ -817,6 +817,9 @@
     <string name="aa_receiver_address_title">安卓模式的手机地址</string>
     <string name="aa_receiver_address_hint">发送画面那台手机的 host:port</string>
     <string name="aa_sender_button">安卓模式发送端（测试手机）</string>
+    <string name="aap_receiver_button">Android Auto 互联 · 端口 %1$d</string>
+    <string name="aap_receiver_hint">车机在这个端口等待手机接入。在安卓手机上安装发送端应用，填入本车机地址，手机自己的桌面就会显示在这里，车机的触摸和按键直接操作手机。</string>
+    <string name="aap_receiver_needs_api">Android Auto 互联需要 Android 5.0 或更高版本</string>
     <string name="aa_receiver_waiting">正在等待手机发送端 %1$s</string>
     <string name="aa_receiver_retrying">已断开：%1$s · 正在重试</string>
     <string name="aa_sender_title">安卓模式 · 发送端</string>

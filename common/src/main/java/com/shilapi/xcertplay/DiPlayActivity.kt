@@ -1358,6 +1358,23 @@ class DiPlayActivity : ComponentActivity() {
                     setPadding(0, dp(4), 0, 0)
                 })
             }
+            // The Android Auto protocol itself, as opposed to the captured mode above. The phone
+            // keeps drawing its own home screen and this unit only renders what it is sent, so
+            // touches and keys travel back over the same link instead of through an accessibility
+            // service on the phone. The port is echoed on the button because the sender has to be
+            // told the same number.
+            if (Build.VERSION.SDK_INT >= 21) {
+                card.addView(button(getString(R.string.aap_receiver_button, AapProjectionActivity.DEFAULT_PORT), false) {
+                    startActivity(AapProjectionActivity.intentForListening(this@DiPlayActivity))
+                }, matchButton(12, 60))
+                card.addView(label(getString(R.string.aap_receiver_hint), 14, MUTED).apply {
+                    setPadding(0, dp(4), 0, 0)
+                })
+            } else {
+                card.addView(label(getString(R.string.aap_receiver_needs_api), 14, MUTED).apply {
+                    setPadding(0, dp(4), 0, 0)
+                })
+            }
         }
         filteredSection(content, SettingsSection.USB_BLUETOOTH,
             getString(R.string.settings_usb_bluetooth_title), R.drawable.ic_dp_connection, ::usbBluetoothSettings)

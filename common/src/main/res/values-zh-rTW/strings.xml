@@ -806,6 +806,9 @@
     <string name="aa_receiver_address_title">安卓模式的手機位址</string>
     <string name="aa_receiver_address_hint">送出畫面那支手機的 host:port</string>
     <string name="aa_sender_button">安卓模式發送端（測試手機）</string>
+    <string name="aap_receiver_button">Android Auto 互聯 · 連接埠 %1$d</string>
+    <string name="aap_receiver_hint">車機在這個連接埠等待手機接入。在安卓手機上安裝發送端應用程式，填入本車機位址，手機自己的桌面就會顯示在這裡，車機的觸控和按鍵直接操作手機。</string>
+    <string name="aap_receiver_needs_api">Android Auto 互聯需要 Android 5.0 或更新版本</string>
     <string name="aa_receiver_waiting">正在等待手機發送端 %1$s</string>
     <string name="aa_receiver_retrying">已中斷：%1$s · 正在重試</string>
     <string name="aa_sender_title">安卓模式 · 發送端</string>
