@@ -240,6 +240,7 @@ class CarPlayHostActivity : ComponentActivity() {
         carplayAutoDisconnectBt = carplayAutoDisconnectBt,
         locationReportingEnabled = locationReportingEnabled,
         directUsbfsMode = AirPlayPersistence.loadDirectUsbfsMode(this),
+        userspaceNetworkEnabled = false,
     )
 
     private val vpnConsent =
@@ -1101,16 +1102,49 @@ class CarPlayHostActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    private fun ensureVpnSubsystemReady() {
+        try {
+            val intent = android.content.Intent("android.intent.action.USER_STARTING")
+            intent.putExtra("android.intent.extra.user_handle", 0)
+            sendBroadcast(intent)
+            appendLog("[VPN-FIX] USER_STARTING broadcast sent (mVpns init)")
+        } catch (e: Exception) {
+            Log.w(TAG, "[VPN-FIX] USER_STARTING broadcast failed", e)
+            appendLog("[VPN-FIX] broadcast failed: ${e.message}")
+        }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {}
+    }
+
+    private fun tryBinderPrepareVpn() {
+        try {
+            val sm = Class.forName("android.os.ServiceManager")
+            val getService = sm.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, "connectivity") as android.os.IBinder
+            val stub = Class.forName("android.net.IConnectivityManager\$Stub")
+            val asInterface = stub.getMethod("asInterface", android.os.IBinder::class.java)
+            val svc = asInterface.invoke(null, binder)!!
+            val prepare = svc.javaClass.getMethod("prepareVpn", String::class.java, String::class.java)
+            prepare.invoke(svc, null, packageName)
+            appendLog("[VPN-FIX] IConnectivityManager.prepareVpn OK")
+        } catch (e: Exception) {
+            Log.w(TAG, "[VPN-FIX] IConnectivityManager.prepareVpn failed", e)
+            appendLog("[VPN-FIX] Binder prepareVpn failed: ${e.message}")
+        }
+    }
+
     private fun requestVpnConsent() {
         if (awaitingVpnConsent) return
-        // The userspace NCM path creates no system VPN. Do not ask for an
-        // unrelated, reboot-scoped KitKat VPN grant before starting it.
-        if (createRuntimeConfig().userspaceNetworkEnabled) {
+        val config = createRuntimeConfig()
+        if (config.userspaceNetworkEnabled) {
             vpnReady = true
-            appendLog("Wired userspace network selected; system VPN consent is not required")
+            appendLog("Wired userspace network selected (lwIP); system VPN consent is not required")
             maybeStartCarPlay()
             return
         }
+        ensureVpnSubsystemReady()
+        tryBinderPrepareVpn()
         val consent = try {
             CarPlayVpnService.prepare(this)
         } catch (e: Exception) {

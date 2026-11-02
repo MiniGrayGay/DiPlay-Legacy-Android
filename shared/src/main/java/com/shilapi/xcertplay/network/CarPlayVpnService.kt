@@ -480,9 +480,14 @@ class CarPlayVpnService : VpnService() {
     fun isAttached(): Boolean = active.get() && attachment != null
 
     fun sendUnsolicitedNeighborAdvertisement(force: Boolean = false) {
-        bridge?.sendUnsolicitedNeighborAdvertisement(force)
+        // The controller calls this immediately after iAP2 StartSession. vpnF uses that
+        // event to arm kernel-path bulk-OUT; actual USB TX additionally waits for inbound NCM.
+        bridge?.armOutboundAfterStartSession(force)
         lwipBridge?.sendUnsolicitedNeighborAdvertisement(force)
     }
+
+    /** vpnG: lets the iAP2 loop re-invite the phone as soon as endpoint 0x06 is proven writable. */
+    fun isNcmBulkOutReady(): Boolean = bridge?.hasCompletedBulkOut() == true
 
     /** Port the AirPlay listener actually bound, which may differ from the configured port. */
     fun boundPort(): Int? = attachment?.config?.port

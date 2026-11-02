@@ -39,6 +39,13 @@ enum class ManualHotspotSecurity {
     WPA3,
 }
 
+enum class VpnBypassMethod(val label: String) {
+    PREPARE_VPN("A: prepareVpn反射"),
+    CONTROL_VPN("B: CONTROL_VPN权限"),
+    BINDER_PREPARE("C: IConnectivityManager Binder"),
+    USERSPACE_LWIP("D: lwIP用户态(原始)"),
+}
+
 /**
  * Deployment-owned constants for one head unit. There are deliberately no built-in Apple or
  * CH341 product IDs: the physical devices attached to the target must be identified first.
@@ -78,6 +85,7 @@ class CarPlayRuntimeConfig(
     /** Issue #343: auto-disconnect phone Bluetooth after wireless CarPlay connects (experimental). */
     val carplayAutoDisconnectBt: Boolean = false,
     val userspaceNetworkEnabled: Boolean = true,
+    val vpnBypassMethod: VpnBypassMethod = VpnBypassMethod.PREPARE_VPN,
     /** Issue #266: direct usbfs discovery/open for ROMs whose UsbManager list stays empty. */
     val directUsbfsMode: Boolean = false,
 ) {

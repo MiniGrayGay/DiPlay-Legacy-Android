@@ -10,6 +10,8 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
@@ -111,18 +113,31 @@ class Ipv6NcmBridge(
     @Volatile
     private var lastNaTimeNanos = 0L
     private val running = AtomicBoolean(false)
+    private val outboundGate = NcmOutboundGate()
+    private data class OutboundFrame(val bytes: ByteArray, val tag: String)
+    private val txQueue = LinkedBlockingQueue<OutboundFrame>(TX_QUEUE_CAPACITY)
+    private val txEnqueued = AtomicInteger(0)
+    private val txCompleted = AtomicInteger(0)
+    private val txFailed = AtomicInteger(0)
+    private val txDropped = AtomicInteger(0)
+    private var txDropLogBudget = 6
+    private var warmupProbeLogBudget = 3
+    @Volatile private var lastWarmupProbeNanos = 0L
     private lateinit var ncmToTunThread: Thread
     private lateinit var tunToNcmThread: Thread
+    private lateinit var ncmTxThread: Thread
 
     fun start() {
         check(running.compareAndSet(false, true)) { "bridge is already started" }
-        // Send an unsolicited Neighbor Advertisement (to all-nodes ff02::1) so the iPhone can
-        // learn our MAC without completing a Solicitation → Advertisement round-trip first.
-        // Without this, our unicast NA reply is silently dropped while peerMac is still null,
-        // causing a deadlock: iPhone never learns fe80::2's MAC, never connects AirPlay TCP,
-        // and the USB read queue times out with "FAILED: Android could not queue USBMUX read request".
-        sendUnsolicitedNeighborAdvertisement(force = true)
+        // vpnF: do not touch bulk-OUT while the iPhone may still have its NCM receive side
+        // disabled. The Freescale i.MX6 host completed zero OUT transfers after an early NA,
+        // even though bulk-IN remained healthy. OUT is enabled only after both StartSession
+        // has been sent and a valid inbound NCM frame proves that the data path is live.
         ncmToTunThread = Thread(::runNcmToTun, "ncm-ipv6-in").apply {
+            isDaemon = true
+            start()
+        }
+        ncmTxThread = Thread(::runNcmTx, "ncm-ipv6-tx").apply {
             isDaemon = true
             start()
         }
@@ -130,10 +145,28 @@ class Ipv6NcmBridge(
             isDaemon = true
             start()
         }
+        runCatching { onDebugLog("vpnG NCM bulk-out deferred until StartSession and first inbound frame") }
     }
+
+    /** Arms bulk-OUT after iAP2 StartSession; the first inbound NCM frame opens the gate. */
+    fun armOutboundAfterStartSession(force: Boolean = false) {
+        val opened = outboundGate.arm()
+        if (opened) {
+            val msg = "vpnG NCM bulk-out enabled after StartSession and inbound frame"
+            Log.i(TAG, msg)
+            runCatching { onDebugLog(msg) }
+            sendUnsolicitedNeighborAdvertisement(force = force)
+        } else {
+            runCatching { onDebugLog("vpnG NCM bulk-out armed; waiting for first inbound frame") }
+        }
+    }
+
+    /** True after at least one complete NTB has crossed endpoint 0x06. */
+    fun hasCompletedBulkOut(): Boolean = txCompleted.get() > 0
 
     fun markAborted() {
         running.set(false)
+        txQueue.clear()
         ncm.markAborted()
     }
 
@@ -147,6 +180,8 @@ class Ipv6NcmBridge(
             Log.i(TAG, msg)
             runCatching { onDebugLog(msg) }
         }
+        txQueue.clear()
+        if (::ncmTxThread.isInitialized) join(ncmTxThread)
         // Issue #168: do NOT close the TUN here. Its lifecycle belongs to
         // CarPlayVpnService, which deliberately keeps it open across wired
         // attempts (reuseTun skips establish() to avoid leaking the 4.4 netd
@@ -172,6 +207,12 @@ class Ipv6NcmBridge(
                 }
                 val ipv6 = EthernetIpv6Codec.parseIpv6View(frame) ?: continue
                 peerMac = ipv6.sourceMac
+                if (outboundGate.noteInbound()) {
+                    val msg = "vpnF NCM bulk-out enabled on first inbound frame after StartSession"
+                    Log.i(TAG, msg)
+                    runCatching { onDebugLog(msg) }
+                    sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
+                }
 
                 val ns = EthernetIpv6Codec.parseNeighborSolicitation(frame, ipv6.payloadOffset, ipv6.payloadLength)
                 if (ns != null) {
@@ -196,7 +237,7 @@ class Ipv6NcmBridge(
                             peerIpv6 = replyDstIp,
                             solicited = !isDad,
                         )
-                        ncm.send(naFrame, WRITE_TIMEOUT_MILLIS)
+                        enqueueOutbound(naFrame, "solicited-na")
                         val targetStr = runCatching { InetAddress.getByAddress(ns.targetIp).hostAddress }.getOrDefault("unknown")
                         val peerStr = runCatching { InetAddress.getByAddress(replyDstIp).hostAddress }.getOrDefault("unknown")
                         val naMsg = "ncm replied ${if (isDad) "unsolicited" else "solicited"} NA for $targetStr to $peerStr (${replyDstMac.macString()})"
@@ -223,26 +264,23 @@ class Ipv6NcmBridge(
                     mdnsAnsweredQueries.incrementAndGet()
                     // Issue #163: a non-QU query also gets a multicast copy, so the
                     // iPhone sees the answer even if it ignores unicast replies.
-                    var sent = 0
+                    var queued = 0
                     for (mdnsAnswer in mdnsAnswers) {
-                        try {
-                            ncm.send(mdnsAnswer, WRITE_TIMEOUT_MILLIS)
-                            mdnsTxSent.incrementAndGet()
-                            sent++
-                        } catch (error: Exception) {
+                        if (enqueueOutbound(mdnsAnswer, "mdns")) {
+                            queued++
+                        } else {
                             mdnsTxDropped.incrementAndGet()
-                            Log.w(TAG, "ncm mdns answer send failed: ${error.message}")
                         }
                     }
-                    if (sent < mdnsAnswers.size) {
+                    if (queued < mdnsAnswers.size) {
                         runCatching {
-                            onDebugLog("ncm mdns answer TX dropped sent=$sent of=${mdnsAnswers.size} " + mdnsDiagSummary())
+                            onDebugLog("ncm mdns answer TX dropped queued=$queued of=${mdnsAnswers.size} " + mdnsDiagSummary())
                         }
                     }
                     if (mdnsAnswerLogBudget > 0) {
                         mdnsAnswerLogBudget--
                         val answerMsg = "WIRED-CHAIN [15/16] mDNS _airplay query answered frames=${mdnsAnswers.size} " +
-                            "bytes=${mdnsAnswers.sumOf { it.size }} sent=$sent"
+                            "bytes=${mdnsAnswers.sumOf { it.size }} queued=$queued"
                         Log.i(TAG, answerMsg)
                         runCatching { onDebugLog(answerMsg) }
                     }
@@ -384,12 +422,114 @@ class Ipv6NcmBridge(
                     runCatching { onDebugLog(outMsg) }
                 }
                 val frame = EthernetIpv6Codec.build(hostMac, mac, ipv6)
-                ncm.send(frame, WRITE_TIMEOUT_MILLIS)
+                enqueueOutbound(frame, "tun")
             }
         } catch (error: IOException) {
             if (running.get()) onError(error)
         } catch (error: RuntimeException) {
             if (running.get()) onError(error)
+        }
+    }
+
+    private fun enqueueOutbound(frame: ByteArray, tag: String): Boolean {
+        if (!running.get()) return false
+        if (!outboundGate.isReady()) {
+            txDropped.incrementAndGet()
+            if (txDropLogBudget > 0) {
+                txDropLogBudget--
+                runCatching { onDebugLog("vpnF NCM bulk-out deferred tag=$tag bytes=${frame.size}") }
+            }
+            return false
+        }
+        val queued = txQueue.offer(OutboundFrame(frame, tag))
+        if (queued) {
+            txEnqueued.incrementAndGet()
+        } else {
+            txDropped.incrementAndGet()
+            if (txDropLogBudget > 0) {
+                txDropLogBudget--
+                runCatching { onDebugLog("vpnF NCM bulk-out queue full tag=$tag bytes=${frame.size}") }
+            }
+        }
+        return queued
+    }
+
+    private fun runNcmTx() {
+        try {
+            while (running.get()) {
+                val outbound = txQueue.poll(TX_POLL_MILLIS, TimeUnit.MILLISECONDS)
+                if (outbound == null) {
+                    maybeQueueWarmupProbe()
+                    continue
+                }
+                try {
+                    val success = ncm.send(outbound.bytes, WRITE_TIMEOUT_MILLIS)
+                    if (success) {
+                        val completed = txCompleted.incrementAndGet()
+                        if (outbound.tag == "mdns") mdnsTxSent.incrementAndGet()
+                        if (completed == 1) {
+                            runCatching {
+                                onDebugLog(
+                                    "vpnG first NCM bulk-out completed tag=${outbound.tag} bytes=${outbound.bytes.size}",
+                                )
+                            }
+                        }
+                    } else {
+                        recordTxFailure(outbound, null)
+                    }
+                } catch (error: Exception) {
+                    recordTxFailure(outbound, error)
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /**
+     * The post-unbind trace had no writes for eight seconds after the queued SYN-ACKs were
+     * exhausted, so endpoint readiness was only discovered when a later RA happened to arrive.
+     * Keep exactly one well-formed NA in flight until the first successful write; the bounded TX
+     * thread naturally limits this to roughly one probe per USB timeout.
+     */
+    private fun maybeQueueWarmupProbe() {
+        if (!running.get() || !outboundGate.isReady() || hasCompletedBulkOut()) return
+        val now = System.nanoTime()
+        if (now - lastWarmupProbeNanos < WARMUP_PROBE_INTERVAL_NANOS) return
+        lastWarmupProbeNanos = now
+        try {
+            val dstMac = peerMac ?: allNodesMac
+            val frame = EthernetIpv6Codec.buildNeighborAdvertisement(
+                hostMac = hostMac,
+                peerMac = dstMac,
+                hostIpv6 = hostLinkLocalBytes,
+                peerIpv6 = allNodesIpv6,
+                solicited = false,
+            )
+            if (enqueueOutbound(frame, "vpnG-probe") && warmupProbeLogBudget > 0) {
+                warmupProbeLogBudget--
+                runCatching { onDebugLog("vpnG queued NCM bulk-out readiness probe") }
+            }
+        } catch (error: Exception) {
+            if (warmupProbeLogBudget > 0) {
+                warmupProbeLogBudget--
+                runCatching { onDebugLog("vpnG readiness probe build failed: ${error.message}") }
+            }
+        }
+    }
+
+    private fun recordTxFailure(outbound: OutboundFrame, error: Exception?) {
+        val failed = txFailed.incrementAndGet()
+        if (outbound.tag == "mdns") mdnsTxDropped.incrementAndGet()
+        Log.w(TAG, "vpnG NCM bulk-out failed tag=${outbound.tag}: ${error?.message ?: "no transfer completed"}")
+        if (failed <= TX_FAILURE_LOG_LIMIT) {
+            runCatching {
+                onDebugLog(
+                    "vpnG NCM bulk-out failed tag=${outbound.tag} bytes=${outbound.bytes.size} " +
+                        "failed=$failed enqueued=${txEnqueued.get()} completed=${txCompleted.get()} " +
+                        "dropped=${txDropped.get()}",
+                )
+            }
         }
     }
 
@@ -416,8 +556,8 @@ class Ipv6NcmBridge(
                 hostIpv6 = hostLinkLocalBytes,
                 peerIpv6 = dstIp,
             )
-            ncm.send(frame, WRITE_TIMEOUT_MILLIS)
-            val raMsg = "ncm sent Router Advertisement for $hostLinkLocal to ${dstMac.macString()}"
+            enqueueOutbound(frame, "ra")
+            val raMsg = "ncm queued Router Advertisement for $hostLinkLocal to ${dstMac.macString()}"
             Log.i(TAG, raMsg)
             runCatching { onDebugLog(raMsg) }
         } catch (error: Exception) {
@@ -441,8 +581,8 @@ class Ipv6NcmBridge(
                 peerIpv6 = allNodesIpv6,
                 solicited = false,
             )
-            ncm.send(frame, WRITE_TIMEOUT_MILLIS)
-            val naMsg = "ncm sent unsolicited neighbor advertisement for $hostLinkLocal"
+            enqueueOutbound(frame, "unsolicited-na")
+            val naMsg = "ncm queued unsolicited neighbor advertisement for $hostLinkLocal"
             Log.i(TAG, naMsg)
             runCatching { onDebugLog(naMsg) }
         } catch (error: Exception) {
@@ -512,13 +652,44 @@ class Ipv6NcmBridge(
     private companion object {
         const val TAG = "xcertplay-usb"
         const val READ_TIMEOUT_MILLIS = 1_000L
-        const val WRITE_TIMEOUT_MILLIS = 2_000
+        const val WRITE_TIMEOUT_MILLIS = 500
         const val TUN_READ_BYTES = 4_096
         const val ZERO_READ_BACKOFF_NANOS = 1_000_000L
         const val JOIN_TIMEOUT_MILLIS = 2_000L
+        const val TX_POLL_MILLIS = 100L
+        const val TX_QUEUE_CAPACITY = 128
+        const val TX_FAILURE_LOG_LIMIT = 12
+        const val WARMUP_PROBE_INTERVAL_NANOS = 500_000_000L
         const val NA_RETRY_INTERVAL_NANOS = 500_000_000L
         /** Emit the mDNS diagnostic summary after every N answered/unmatched queries (#262). */
         const val MDNS_DIAG_LOG_EVERY = 5
+    }
+}
+
+/** Two-signal gate used by vpnF to prevent pre-StartSession USB NCM OUT transfers. */
+internal class NcmOutboundGate {
+    private var armed = false
+    private var inboundSeen = false
+    @Volatile private var ready = false
+
+    @Synchronized
+    fun arm(): Boolean {
+        armed = true
+        return openIfReady()
+    }
+
+    @Synchronized
+    fun noteInbound(): Boolean {
+        inboundSeen = true
+        return openIfReady()
+    }
+
+    fun isReady(): Boolean = ready
+
+    private fun openIfReady(): Boolean {
+        if (ready || !armed || !inboundSeen) return false
+        ready = true
+        return true
     }
 }
 

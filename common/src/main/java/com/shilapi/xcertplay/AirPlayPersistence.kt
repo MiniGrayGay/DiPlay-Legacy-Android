@@ -102,6 +102,7 @@ object AirPlayPersistence {
     private const val KEY_CAR_BLUETOOTH_AUDIO = "car_bluetooth_audio"
     private const val KEY_DIRECT_SURFACE_VIEW = "direct_surface_view"
     private const val KEY_DIRECT_USBFS_MODE = "direct_usbfs_mode"
+    private const val KEY_VPN_BYPASS_METHOD = "vpn_bypass_method"
     private const val KEY_CLUSTER_MAP = "cluster_map_enabled"
     private const val KEY_ADB_CLUSTER_ACTIVITY = "adb_cluster_activity_enabled"
     private const val KEY_CENTER_MAP_OVERLAY = "center_map_overlay"
@@ -1532,4 +1533,17 @@ object AirPlayPersistence {
 
     private fun safeAreaKey(widthPixels: Int, heightPixels: Int): String =
         "$SAFE_AREA_KEY_PREFIX${widthPixels}x$heightPixels"
+
+    fun loadVpnBypassMethod(context: Context): com.shilapi.xcertplay.orchestration.VpnBypassMethod {
+        val name = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_VPN_BYPASS_METHOD, null)
+        return com.shilapi.xcertplay.orchestration.VpnBypassMethod.entries
+            .firstOrNull { it.name == name }
+            ?: com.shilapi.xcertplay.orchestration.VpnBypassMethod.PREPARE_VPN
+    }
+
+    fun saveVpnBypassMethod(context: Context, method: com.shilapi.xcertplay.orchestration.VpnBypassMethod) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_VPN_BYPASS_METHOD, method.name).apply()
+    }
 }

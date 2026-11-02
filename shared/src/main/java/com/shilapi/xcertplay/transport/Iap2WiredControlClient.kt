@@ -38,6 +38,8 @@ class Iap2WiredControlClient(
          * instead of idling until the USB stack wedges. Defaults to disabled.
          */
         airPlayTcpArrived: () -> Boolean = { true },
+        /** vpnG: endpoint 0x06 has completed at least one NTB and can receive a fresh SYN-ACK. */
+        ncmBulkOutReady: () -> Boolean = { false },
         /**
          * Issue #134: whether AirPlay media is still arriving. The peer-silence reset may only fire
          * while iAP2 is quiet **and** this reports no recent media, otherwise a working session is torn
@@ -74,6 +76,9 @@ class Iap2WiredControlClient(
         var forwardedFrames = 0
         var carPlayStartSessions = 0
         var startSessionNanos = 0L
+        var lastStartSessionNanos = 0L
+        var automaticStartSessionResends = 0
+        var bulkOutReadyResendSent = false
         val loopStartNanos = System.nanoTime()
         /** Reports the "media alive" decision once per run so a quiet control channel cannot spam. */
         var keptLinkAfterSilence = false
@@ -89,6 +94,45 @@ class Iap2WiredControlClient(
                 val remaining = remainingMillis(deadlineNanos)
                 if (remaining == 0L) {
                     return Iap2WiredControlResult(Iap2WiredControlTerminal.TIMED_OUT, stage, forwardedFrames, carPlayStartSessions)
+                }
+                // vpnG: the iPhone stops retrying its first TCP SYN several seconds before the
+                // post-unbind NCM OUT endpoint becomes writable. Re-send 0x4301 periodically to
+                // keep a SYN window alive, and immediately once the bridge proves 0x06 works.
+                // This runs before recv so frequent 0x5001 frames cannot starve the timer.
+                if (carPlayStartSessions > 0 && !airPlayTcpArrived()) {
+                    val now = System.nanoTime()
+                    val readyResend = !bulkOutReadyResendSent && ncmBulkOutReady()
+                    val periodicResend = automaticStartSessionResends < MAX_START_SESSION_RESENDS &&
+                        now - lastStartSessionNanos >= START_SESSION_RESEND_INTERVAL_MILLIS * NANOS_PER_MILLISECOND
+                    if (readyResend || periodicResend) {
+                        send(carPlayStartSession(endpoint), deadlineNanos)
+                        stage = Iap2WiredControlStage.CARPLAY_START_SENT
+                        carPlayStartSessions++
+                        automaticStartSessionResends++
+                        lastStartSessionNanos = now
+                        if (readyResend) {
+                            bulkOutReadyResendSent = true
+                            // The first meaningful NCM attempt starts here, not at the invite whose
+                            // SYN-ACKs all died on the unavailable endpoint.
+                            startSessionNanos = now
+                        }
+                        onProgress(
+                            "iap2 tx=0x4301 carplay-start-session " +
+                                if (readyResend) "(vpnG bulk-out-ready resend)"
+                                else "(vpnG timed resend $automaticStartSessionResends)",
+                        )
+                    }
+                    if (System.nanoTime() - startSessionNanos >=
+                        WIRED_FIRST_TCP_MILLIS * NANOS_PER_MILLISECOND
+                    ) {
+                        onProgress("iap2 wired no AirPlay TCP ${WIRED_FIRST_TCP_MILLIS}ms after carplay-start-session")
+                        return Iap2WiredControlResult(
+                            Iap2WiredControlTerminal.NO_AIRPLAY_TCP,
+                            stage,
+                            forwardedFrames,
+                            carPlayStartSessions,
+                        )
+                    }
                 }
                 location.tick { send(it, deadlineNanos) }
                 vehicleStatus.tick { send(it, deadlineNanos) }
@@ -143,7 +187,9 @@ class Iap2WiredControlClient(
                         send(carPlayStartSession(endpoint), deadlineNanos)
                         stage = Iap2WiredControlStage.CARPLAY_START_SENT
                         carPlayStartSessions++
-                        if (startSessionNanos == 0L) startSessionNanos = System.nanoTime()
+                        val sentAt = System.nanoTime()
+                        if (startSessionNanos == 0L) startSessionNanos = sentAt
+                        lastStartSessionNanos = sentAt
                         onProgress("iap2 tx=0x4301 carplay-start-session")
                     }
 
@@ -177,19 +223,6 @@ class Iap2WiredControlClient(
                                 "but AirPlay media is still arriving; keeping the link",
                         )
                     }
-                    // Issue #95: iPhone alive on iAP2 but no AirPlay TCP — fail fast with a
-                    // clear message instead of idling until the USB stack wedges.
-                    if (carPlayStartSessions > 0 && !airPlayTcpArrived() &&
-                        System.nanoTime() - startSessionNanos >= WIRED_FIRST_TCP_MILLIS * NANOS_PER_MILLISECOND
-                    ) {
-                        onProgress("iap2 wired no AirPlay TCP ${WIRED_FIRST_TCP_MILLIS}ms after carplay-start-session")
-                        return Iap2WiredControlResult(
-                            Iap2WiredControlTerminal.NO_AIRPLAY_TCP,
-                            stage,
-                            forwardedFrames,
-                            carPlayStartSessions,
-                        )
-                    }
                     continue
                 }
                 silenceMonitor.onFrameReceived()
@@ -203,7 +236,9 @@ class Iap2WiredControlClient(
                         send(carPlayStartSession(endpoint), deadlineNanos)
                         stage = Iap2WiredControlStage.CARPLAY_START_SENT
                         carPlayStartSessions++
-                        if (startSessionNanos == 0L) startSessionNanos = System.nanoTime()
+                        val sentAt = System.nanoTime()
+                        if (startSessionNanos == 0L) startSessionNanos = sentAt
+                        lastStartSessionNanos = sentAt
                         onProgress("iap2 tx=0x4301 carplay-start-session")
                     }
 
@@ -237,6 +272,8 @@ class Iap2WiredControlClient(
         private const val CARPLAY_START_SESSION = 0x4301
         private const val STARTUP_AVAILABILITY_TIMEOUT_MILLIS = 60_000L
         private const val PROACTIVE_START_SESSION_DELAY_MILLIS = 2_500L
+        private const val START_SESSION_RESEND_INTERVAL_MILLIS = 4_000L
+        private const val MAX_START_SESSION_RESENDS = 6
         private const val DEFAULT_TIMEOUT_MILLIS = 60_000L
         private const val MAX_TIMEOUT_MILLIS = 24 * 60 * 60 * 1_000L
         private const val MAX_RECV_TIMEOUT_MILLIS = 5 * 60 * 1_000L

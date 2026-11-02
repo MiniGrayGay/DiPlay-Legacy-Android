@@ -106,8 +106,8 @@ class NcmUsbBridge internal constructor(
     }
 
     /** Wraps one Ethernet frame in one NTB16 block and writes it to bulk OUT. */
-    fun send(frame: ByteArray, timeoutMillis: Int) = synchronized(writeLock) {
-        if (closed || isAbortedOrDetached) return@synchronized
+    fun send(frame: ByteArray, timeoutMillis: Int): Boolean = synchronized(writeLock) {
+        if (closed || isAbortedOrDetached) return@synchronized false
         ncmWriteEnqueuedFrames++
         checkOpen()
         require(timeoutMillis > 0) { "timeoutMillis must be positive" }
@@ -162,7 +162,7 @@ class NcmUsbBridge internal constructor(
                     loggedWriteTimeout = true
                     Log.i(IphoneCarPlayConfiguration.TAG, "ncm bulk-out not ready; retaining bridge for retry")
                 }
-                return@synchronized
+                return@synchronized false
             }
             // The phone only sends once its data path is up, so from here a run of failures means bulk
             // OUT alone is gone: inbound video keeps arriving while touch, return audio and TCP ACKs
@@ -205,7 +205,7 @@ class NcmUsbBridge internal constructor(
                     "NCM write failed $consecutiveWriteFailures times while the data path was live",
                 )
             }
-            return@synchronized
+            return@synchronized false
         }
         if (transferred != block.size) {
             // The phone holds a truncated NTB16 block, so this frame stream cannot be resumed in
@@ -219,6 +219,7 @@ class NcmUsbBridge internal constructor(
             loggedWriteTimeout = false
             Log.i(IphoneCarPlayConfiguration.TAG, "ncm bulk-out became ready")
         }
+        true
     }
 
     /**
@@ -939,14 +940,21 @@ class NcmUsbBridge internal constructor(
                 log("ncm claim config=$expectedConfiguration control=${describe(function.control)} data=${describe(function.data)}" +
                     " api=${Build.VERSION.SDK_INT} manufacturer=${Build.MANUFACTURER}" +
                     " board=${Build.BOARD} hardware=${Build.HARDWARE} legacyEligible=$legacyEligible")
+                val driverDetach = CdcNcmDriverDetach.detach(
+                    expectedConfiguration,
+                    function.control.id,
+                    function.data.id,
+                )
+                log("vpnG ${driverDetach.diagnostic}")
                 var lastClaimErrno: Int? = null
                 fun claim(value: UsbInterface): Boolean {
                     var nativeOps: LegacyNcmClaim.Native? = null
                     val trace: (String) -> Unit = { log("ncm claim iface=${describe(value)} $it") }
                     return LegacyNcmClaim.claim(
                         eligible = legacyEligible,
+                        preferNonForcing = driverDetach.readyForNonForcingClaim,
                         framework = { force ->
-                            val res = LegacyUsbHostCompat.claim(connection, value)
+                            val res = LegacyUsbHostCompat.claim(connection, value, force)
                             lastClaimErrno = res.errno
                             trace("framework claim force=$force ok=${res.claimed} errno=${res.errno ?: "none"}")
                             res.claimed

@@ -26,7 +26,14 @@ internal object LegacyNcmClaim {
         native: () -> Native?,
         owned: () -> Unit,
         log: (String) -> Unit,
+        preferNonForcing: Boolean = false,
     ): Boolean {
+        if (preferNonForcing) {
+            val ordinary = framework(false)
+            if (ordinary) owned()
+            log("framework force=false ok=$ordinary")
+            if (ordinary) return true
+        }
         val standard = framework(true)
         // Register ownership before logging/verification so the caller can always unwind it.
         if (standard) owned()

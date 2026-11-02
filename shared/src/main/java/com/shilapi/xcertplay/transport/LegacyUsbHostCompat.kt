@@ -138,16 +138,18 @@ internal object LegacyUsbHostCompat {
         return ConfigurationResult(ok, errno, active)
     }
 
-    fun claim(connection: SharedUsbConnection, usbInterface: UsbInterface): ClaimResult {
-        if (connection.claimInterface(usbInterface, true)) return ClaimResult(true, null)
+    fun claim(connection: SharedUsbConnection, usbInterface: UsbInterface, force: Boolean = true): ClaimResult {
+        if (connection.claimInterface(usbInterface, force)) return ClaimResult(true, null)
+        if (!force) return ClaimResult(false, null)
         if (realSdkInt() > Build.VERSION_CODES.P) return ClaimResult(false, null)
         val fd = runCatching { connection.fileDescriptor }.getOrDefault(-1)
         return forceClaimFd(fd, usbInterface)
     }
 
     /** Framework-typed overload kept for callers that own a plain connection (CH341 host). */
-    fun claim(connection: UsbDeviceConnection, usbInterface: UsbInterface): ClaimResult {
-        if (connection.claimInterface(usbInterface, true)) return ClaimResult(true, null)
+    fun claim(connection: UsbDeviceConnection, usbInterface: UsbInterface, force: Boolean = true): ClaimResult {
+        if (connection.claimInterface(usbInterface, force)) return ClaimResult(true, null)
+        if (!force) return ClaimResult(false, null)
         if (realSdkInt() > Build.VERSION_CODES.P) return ClaimResult(false, null)
         val fd = runCatching { connection.fileDescriptor }.getOrDefault(-1)
         return forceClaimFd(fd, usbInterface)

@@ -3453,6 +3453,7 @@ class CarPlayController(
                     }
                 },
                 airPlayTcpArrived = { wiredTcpArrived.get() },
+                ncmBulkOutReady = { vpnService?.isNcmBulkOutReady() == true },
                 // Issue #134: the peer-silence reset must not tear down a session whose media is still
                 // arriving; the NTDA3's iPhone stops sending iAP2 frames for minutes at a time.
                 airPlayDataRecent = { AirPlayMediaActivity.recent() },
