@@ -1,0 +1,97 @@
+name: Guangqi Release Build
+
+on:
+  push:
+    branches: [guangqi, guangqi-vpn-fix]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up the Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$SDKMANAGER" ]]; then
+            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "ndk;25.2.9519653"
+
+      - name: Provision MFi authentication assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/auth/offline-mfi"
+          echo "${{ secrets.MFI_CERTIFICATE_P7B }}" | base64 -d > "$RUNNER_TEMP/auth/offline-mfi/certificate.p7b"
+          echo "${{ secrets.MFI_IDENTITY_PK8 }}"    | base64 -d > "$RUNNER_TEMP/auth/offline-mfi/identity.pk8"
+          test -s "$RUNNER_TEMP/auth/offline-mfi/certificate.p7b"
+          test -s "$RUNNER_TEMP/auth/offline-mfi/identity.pk8"
+
+      - name: Provision release signing keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release-signing.jks"
+          test -s "$RUNNER_TEMP/release-signing.jks"
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest
+
+      - name: Build release APK
+        shell: bash
+        env:
+          DIPLAY_AUTH_ASSETS_DIR: ${{ runner.temp }}/auth
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release-signing.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ./gradlew :mobile:assembleRelease
+
+      - name: Compute SHA-256
+        id: sha
+        shell: bash
+        run: |
+          APK=$(find mobile/build/outputs/apk/release -name '*.apk' -not -name '*unsigned*' | head -1)
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$(basename "$APK")" >> "$GITHUB_OUTPUT"
+          sha256sum "$APK" | awk '{print $1}' > "${APK}.sha256"
+          echo "sha256_path=${APK}.sha256" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cat "${APK}.sha256")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: guangqi-release-${{ github.ref_name }}-${{ github.sha }}
+          path: |
+            ${{ steps.sha.outputs.apk_path }}
+            ${{ steps.sha.outputs.sha256_path }}
+          retention-days: 90
+
+      - name: Build summary
+        shell: bash
+        run: |
+          echo "### Guangqi Release Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** \`${{ github.ref_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **APK:** \`${{ steps.sha.outputs.apk_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA-256:** \`${{ steps.sha.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
