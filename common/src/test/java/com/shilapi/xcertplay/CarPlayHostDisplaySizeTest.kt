@@ -483,6 +483,9 @@ class CarPlayHostDisplaySizeTest {
         setField("mfiTarget", MfiTarget.LOCAL)
         setField("vpnReady", true)
         setField("microphonePermissionResolved", true)
+        // The Guangqi startup automation gate (CarPlayStartup) has finished.
+        setField("startupAutomationReady", true)
+        setField("startupPrerequisitesRequested", true)
     }
 
     private fun finishTeardown() {

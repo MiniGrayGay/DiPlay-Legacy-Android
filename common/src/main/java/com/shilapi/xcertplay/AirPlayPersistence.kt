@@ -154,10 +154,15 @@ object AirPlayPersistence {
             .putInt("ambient_delay_seconds", seconds.coerceIn(0, 60)).apply()
     }
 
-    fun loadDisplayScalePercent(context: Context): Int =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getInt("display_scale_percent", loadDisplayScaleTenths(context) * 10)
+    fun loadDisplayScalePercent(context: Context): Int {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // Guangqi: 80 % until the driver picks a value, so the VPU keeps room for the cluster stream.
+        val default = if (!prefs.contains(KEY_DISPLAY_SCALE_TENTHS) && GuangqiCluster.present(context)) {
+            GuangqiCluster.MAIN_RESOLUTION_PERCENT
+        } else loadDisplayScaleTenths(context) * 10
+        return prefs.getInt("display_scale_percent", default)
             .coerceIn(CarPlayDisplayScale.MIN_PERCENT, CarPlayDisplayScale.MAX_PERCENT)
+    }
 
     fun saveDisplayScalePercent(context: Context, percent: Int) {
         // Committed rather than applied: saving the settings menu reconnects CarPlay at once,
@@ -926,8 +931,10 @@ object AirPlayPersistence {
             .apply()
     }
 
+    /** On by default on Guangqi, whose cluster is a plain presentation display; off elsewhere. */
     fun loadClusterMapEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLUSTER_MAP, false)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLUSTER_MAP, GuangqiCluster.present(context))
 
     fun loadAdbClusterEnabled(context: Context): Boolean = loadClusterMapEnabled(context) &&
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ADB_CLUSTER_ACTIVITY, false)
@@ -1097,7 +1104,9 @@ object AirPlayPersistence {
         overlaySettingsListener?.invoke()
     }
 
-    fun loadClusterMapScalePercent(context: Context): Int = CarPlayClusterDisplay.STREAM_SCALE_PERCENT.let { default ->
+    fun loadClusterMapScalePercent(context: Context): Int = (
+        if (GuangqiCluster.present(context)) GuangqiCluster.CLUSTER_SCALE_PERCENT else CarPlayClusterDisplay.STREAM_SCALE_PERCENT
+    ).let { default ->
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_CLUSTER_MAP_SCALE, default)
             .takeIf { it in CarPlayClusterDisplay.scalePresets } ?: default
     }

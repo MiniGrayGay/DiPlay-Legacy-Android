@@ -136,6 +136,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private var startupPrerequisitesRequested = false
     private var startupResumed = false
     private val secondScreen by lazy { CarPlaySecondScreen(this, ::dismissClusterPresentation) }
+    private val guangqiClusterReady by lazy { GuangqiCluster.ReadyReporter(this, ::appendLog) }
     private val startupOverlayPermission =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             startupAutomation?.onOverlayPermissionResult()
@@ -1512,6 +1513,7 @@ class CarPlayHostActivity : ComponentActivity() {
         presentations.forEach { runCatching { it.dismiss() } }
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setClusterMapShown(false)
         controller?.setDashboardMapOutputVisible(false)
+        syncGuangqiClusterReady()
     }
 
     private fun onClusterSurface(surface: Surface?) {
@@ -1591,6 +1593,8 @@ class CarPlayHostActivity : ComponentActivity() {
                     ).also { MapMirrors.streamAspect = it.widthPixels.toDouble() / it.heightPixels }
                 }
                 val requestedScale = AirPlayPersistence.loadClusterMapScalePercent(this)
+                val clusterFps = if (GuangqiCluster.present(this)) GuangqiCluster.CLUSTER_FPS
+                    else CarPlayClusterDisplay.FPS
                 fun streamAt(scale: Int) = CarPlayClusterDisplay.config(
                     size.x,
                     size.y,
@@ -1598,6 +1602,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
                     AirPlayPersistence.loadClusterMarkerVerticalStep(this),
                     AirPlayPersistence.loadClusterContent(this),
+                    fps = clusterFps,
                 )
                 val requested = streamAt(requestedScale)
                 // The smaller-map preset enlarges the encoded canvas beyond this panel. Probe
@@ -1616,7 +1621,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 } else requested
                 return effective.also {
                     MapMirrors.streamAspect = it.widthPixels.toDouble() / it.heightPixels
-                    appendLog("Cluster map: requesting ${it.widthPixels}x${it.heightPixels} on ${size.x}x${size.y} safeArea=${it.safeArea} url=${it.initialUrl}")
+                    appendLog("Cluster map: requesting ${it.widthPixels}x${it.heightPixels}@${it.fps}fps on ${size.x}x${size.y} safeArea=${it.safeArea} url=${it.initialUrl}")
                 }
             }
         }
@@ -1833,8 +1838,14 @@ class CarPlayHostActivity : ComponentActivity() {
         appendLog(if (surface != null) "Centre map: mirroring the dashboard stream" else "Centre map: mirror stopped")
     }
 
+    /** Guangqi: the cluster composites our layer only while a navigation source reports ready. */
+    private fun syncGuangqiClusterReady() {
+        guangqiClusterReady.update(clusterPresentation?.isShowing == true && SCREEN_TYPE_ALT in activeScreenStreamTypes)
+    }
+
     // The dashboard map pause must not stop the stream while a copy of the map is on screen.
     private fun updateClusterMapShown() {
+        syncGuangqiClusterReady()
         com.shilapi.xcertplay.hud.BydNavigationOutputs.setClusterMapShown((clusterPresentation != null ||
             (ClusterActivityOutput.hasConfirmedRoute() && clusterSurface != null)) && !MapMirrors.any)
         // Wheel zoom needs a physical map; centre-screen copies must not suppress that eligibility.
@@ -4768,6 +4779,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     }
                     activeScreenStreamTypes.clear()
                     ClusterActivityOutput.setStreamActive(false)
+                    syncGuangqiClusterReady()
                     if (controller?.isWiredWaitingForIphone() == true) {
                         appendLog("Wired AirPlay session ended (USB detached); keeping controller waiting for iPhone")
                         setConnectionStage(getString(R.string.waiting_for_iphone_over_usb))
@@ -4791,6 +4803,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     }
                     activeScreenStreamTypes.clear()
                     ClusterActivityOutput.setStreamActive(false)
+                    syncGuangqiClusterReady()
                     if (controller?.isWiredWaitingForIphone() == true) {
                         appendLog("Wired transport error after USB detach ($message); keeping controller waiting for iPhone")
                         setConnectionStage(getString(R.string.waiting_for_iphone_over_usb))
@@ -5852,6 +5865,7 @@ class CarPlayHostActivity : ComponentActivity() {
         invalidateMainPicture()
         activeScreenStreamTypes.clear()
         ClusterActivityOutput.setStreamActive(false)
+        syncGuangqiClusterReady()
         setConnectionStage(reason)
         Log.i(TAG, "$reason; rebuilding stack at ${size.width}x${size.height}")
         val generation = ++restartGeneration
@@ -6368,6 +6382,9 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun startSecondScreenMirror() {
+        // Guangqi: the cluster shows CarPlay's own cluster stream (111). Mirroring stream 110 there
+        // ran a second decoder for the same stream and halved the main screen's frame rate.
+        if (GuangqiCluster.present(this)) return
         val renderer = sink ?: return
         val display = sessionDisplay ?: return
         secondScreen.bind(renderer, display.width, display.height)
@@ -6398,6 +6415,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 clusterPresentation?.setStreamActive(active)
                 ClusterActivityOutput.setStreamActive(active)
                 MapMirrors.setStreamActive(active)
+                syncGuangqiClusterReady()
                 if (active) {
                     mainHandler.removeCallbacks(hideIdleCenterMap)
                     if (!CenterMapOverlay.shown) CenterMapOverlay.scheduleShow()
