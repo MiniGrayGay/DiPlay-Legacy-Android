@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <android/log.h>
 
@@ -20,6 +21,7 @@
 #include "lwip/udp.h"
 #include "lwip/ethip6.h"
 #include "lwip/timeouts.h"
+#include "lwip/priv/tcp_priv.h"
 #include "netif/ethernet.h"
 
 #define TAG "xcertplay-lwip"
@@ -29,7 +31,13 @@
 
 #define MAX_RELAY_CONNS 32
 #define MAX_UDP_RELAYS 32
-#define BUFFER_SIZE 16384
+/* Phone-bound bytes waiting for tcp_write. One window is enough. */
+#define LOOPBACK_TO_LWIP_BUFFER_SIZE 16384
+/* Phone-to-app bytes. Must cover TCP_WND (32 KiB) plus one more flight,
+ * otherwise recv returns ERR_MEM while the advertised window is still open
+ * and the iPhone waits for a retransmit. */
+#define LWIP_TO_LOOPBACK_BUFFER_SIZE (64 * 1024)
+#define LOOPBACK_SOCKET_BUFFER_SIZE (256 * 1024)
 
 // NO_SYS lwIP owns process-global heaps, PCB lists and cyclic timers.
 // Reinitializing those globals for another USB session corrupts next_timeout.
@@ -41,9 +49,9 @@ typedef struct {
     int active;
     struct tcp_pcb *lwip_pcb;
     int loopback_fd;
-    uint8_t loopback_to_lwip_buf[BUFFER_SIZE];
+    uint8_t loopback_to_lwip_buf[LOOPBACK_TO_LWIP_BUFFER_SIZE];
     int loopback_to_lwip_len;
-    uint8_t lwip_to_loopback_buf[BUFFER_SIZE];
+    uint8_t lwip_to_loopback_buf[LWIP_TO_LOOPBACK_BUFFER_SIZE];
     int lwip_to_loopback_len;
 } TcpRelayConn;
 
@@ -298,7 +306,6 @@ static err_t tcp_relay_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
 }
 
 static err_t tcp_relay_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
-    (void)tpcb;
     (void)err;
     TcpRelayConn *conn = (TcpRelayConn *)arg;
     if (conn == NULL || !conn->active) {
@@ -316,10 +323,16 @@ static err_t tcp_relay_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
 
     // Never wait for a slow local reader while holding the global NO_SYS core
     // lock. Keep bounded data and let the worker forward it nonblockingly.
-    if (p->tot_len > BUFFER_SIZE - conn->lwip_to_loopback_len) return ERR_MEM;
-    pbuf_copy_partial(p, conn->lwip_to_loopback_buf + conn->lwip_to_loopback_len, p->tot_len, 0);
-    conn->lwip_to_loopback_len += p->tot_len;
+    if (p->tot_len > LWIP_TO_LOOPBACK_BUFFER_SIZE - conn->lwip_to_loopback_len) return ERR_MEM;
+    u16_t accepted = (u16_t)p->tot_len;
+    pbuf_copy_partial(p, conn->lwip_to_loopback_buf + conn->lwip_to_loopback_len, accepted, 0);
+    conn->lwip_to_loopback_len += accepted;
     pbuf_free(p);
+    // ACK this segment immediately. lwIP otherwise delays the odd segment
+    // (the tail of a ~7-segment video frame) until the 250 ms TCP timer, and
+    // the phone does not send the next frame. The receive window stays closed
+    // until the worker copies these bytes to loopback and calls tcp_recved.
+    tcp_ack_now(tpcb);
     return ERR_OK;
 }
 
@@ -350,6 +363,12 @@ static err_t tcp_relay_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
         return ERR_CLSD;
     }
 
+    int one = 1;
+    int socket_buffer = LOOPBACK_SOCKET_BUFFER_SIZE;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &socket_buffer, sizeof(socket_buffer));
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &socket_buffer, sizeof(socket_buffer));
+
     struct sockaddr_in sin;
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
@@ -377,6 +396,7 @@ static err_t tcp_relay_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     tcp_recv(newpcb, tcp_relay_recv);
     tcp_err(newpcb, tcp_relay_err);
     tcp_sent(newpcb, tcp_relay_sent);
+    tcp_nagle_disable(newpcb);
 
     return ERR_OK;
 }
@@ -406,7 +426,7 @@ static void check_and_forward_loopback(LwipContext *ctx) {
         if (!conn->active) continue;
         flush_loopback_to_lwip(conn);
 
-        int space = BUFFER_SIZE - conn->loopback_to_lwip_len;
+        int space = LOOPBACK_TO_LWIP_BUFFER_SIZE - conn->loopback_to_lwip_len;
         if (space > 0) {
             ssize_t n = read(conn->loopback_fd, conn->loopback_to_lwip_buf + conn->loopback_to_lwip_len, (size_t)space);
             if (n > 0) {
@@ -584,7 +604,7 @@ static void *lwip_worker_thread(void *arg) {
 
         for (int i = 0; i < MAX_RELAY_CONNS; i++) {
             if (ctx->tcp_conns[i].active && ctx->tcp_conns[i].loopback_fd >= 0) {
-                if (ctx->tcp_conns[i].loopback_to_lwip_len < BUFFER_SIZE) {
+                if (ctx->tcp_conns[i].loopback_to_lwip_len < LOOPBACK_TO_LWIP_BUFFER_SIZE) {
                     FD_SET(ctx->tcp_conns[i].loopback_fd, &rfds);
                     if (ctx->tcp_conns[i].loopback_fd > max_fd) {
                         max_fd = ctx->tcp_conns[i].loopback_fd;
@@ -604,7 +624,7 @@ static void *lwip_worker_thread(void *arg) {
 
         pthread_mutex_unlock(&lwip_core_lock);
 
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 20000 };
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 2000 };
         int sel = select(max_fd + 1, &rfds, NULL, NULL, &tv);
 
         if (sel > 0 && FD_ISSET(ctx->wake_pipe[0], &rfds)) {
