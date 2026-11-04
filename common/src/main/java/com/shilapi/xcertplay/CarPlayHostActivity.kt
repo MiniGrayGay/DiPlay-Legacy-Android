@@ -494,7 +494,7 @@ class CarPlayHostActivity : ComponentActivity() {
         legacyReverseResumeAttempts = 0
         if (!reverseCameraActive) {
             reverseCameraActive = true
-            reverseCameraActiveSinceMs = System.currentTimeMillis()
+            reverseCameraActiveSinceMs = SystemClock.elapsedRealtime()
             appendLog("Display: reverse camera started by broadcast source=$source")
         }
         if (!AirPlayPersistence.loadLegacyReverseColdStart(this)) return
@@ -1721,7 +1721,7 @@ class CarPlayHostActivity : ComponentActivity() {
             // post-exit restore runs the same work once the exit is real.
             // The age cap keeps a never-cleared flag (a missed exit
             // broadcast) from gating refreshes forever.
-            val reverseGateAgeMs = System.currentTimeMillis() - reverseCameraActiveSinceMs
+            val reverseGateAgeMs = SystemClock.elapsedRealtime() - reverseCameraActiveSinceMs
             if (reverseCameraActive && reverseGateAgeMs < REVERSE_ACTIVE_GATE_CAP_MILLIS) {
                 appendLog("Display: focus gained while reverse camera is active; fullscreen and picture refresh deferred to reverse exit")
             } else {
@@ -5433,7 +5433,7 @@ class CarPlayHostActivity : ComponentActivity() {
             val readdBounds = surfaceReaddBounds
             if (dockRefrontAttempts > 0 && readdBounds != null &&
                 bounds.height >= readdBounds.height) {
-                appendLog("Display: full height restored after task re-front (attempts=$dockRefrontAttempts)")
+                appendLog("Display: full height restored; dock re-front episode closed (attempts=$dockRefrontAttempts)")
                 dockRefrontAttempts = 0
             }
             val transitionalShrink = fallbackVideoBounds != bounds && isTransitionalShrinkAfterReadd(bounds)
@@ -6419,6 +6419,9 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun setConnectionStage(message: String, exact: Boolean = false) {
         latestStage = message
         stageStatusView?.text = if (exact) message else friendlyStage(message)
+        // Monotonic, not wall clock: these units boot with unset RTCs
+        // (2018) that jump years when time syncs, and a wall-clock age
+        // turned that into a 278,984,999-second wait on issue #373.
         stageStartedAtMillis = SystemClock.elapsedRealtime()
         val generation = ++stageWatchdogGeneration
         stageDiagnosticView?.text = "阶段已进入 · 0 秒"
