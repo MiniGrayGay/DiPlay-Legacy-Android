@@ -91,6 +91,12 @@ This fork targets a Guangqi (GAEI) head unit: Freescale i.MX6 SABRESD, Android 4
   Platform certificate SHA-256: `7fbae817b7db24642d8959c347b561c003c6cfde2cb10f909c932f21a4d6d804` (`android@freescale.com`).
   A branch cut from upstream `main` must carry commit `256c41d` ("广汽: 使用平台签名并以 system uid 运行") before it is built for the car.
 - The kernel TUN and the system VPN are unusable on 3.0.35, so wired CarPlay uses the userspace lwIP path (`lwip_ncm_relay.c`).
+- The instrument cluster is the PRESENTATION display (display 1, 1280×720). Show content there with a plain `Presentation` and never call `setType()`: `setType(2002)` puts the window on the main screen.
+  Until a navigation source reports ready, the cluster MCU shows its own "导航功能未启动" placeholder and does not composite our layer.
+  Report ready the AMap way: broadcast `AUTONAVI_STANDARD_BROADCAST_SEND` to package `gaei.cluster.service` with `KEY_TYPE=10019` and `EXTRA_STATE=1`, then `EXTRA_STATE=3`. Tested on the car: this does not launch AMap and the cluster then shows our layer.
+  Send `EXTRA_STATE=2` when the cluster content stops.
+  Do not use the Tencent path (`WECARNAVIAUTO_STANDARD_BROADCAST_SEND`, `KEY_TYPE=2000`, `TYPE`): `gaei.cluster.service` launches `com.tencent.wecarnavi`, which must be force-stopped before our window can take the cluster.
+- The VPU decodes about 37 fps of 720p High in total. Never run a second decoder for the same stream: show the CarPlay cluster stream (type 111) on the cluster, or draw one decoded frame to both screens with GL.
 - Build car APKs in CI, not locally: `.github/workflows/guangqi-build.yml` takes the platform keystore and the MFi certificate and identity from repository secrets, and uploads the signed release APK as an artifact.
   Unit test failures do not block that build. Neither the platform key nor the MFi assets are checked into this repository.
 - Changing the app between a normal uid and `android.uid.system` cannot be installed as an update. The installed DiPlay must be uninstalled first, which clears its data.
