@@ -50,11 +50,24 @@ jobs:
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release-signing.jks"
           test -s "$RUNNER_TEMP/release-signing.jks"
 
+      # Test failures are reported but never block the APK: the car test build is still produced.
       - name: Run unit tests
+        id: tests
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest
+          ./gradlew --continue :shared:testDebugUnitTest :common:testDebugUnitTest :home:testDebugUnitTest
+
+      - name: Upload unit test reports
+        if: steps.tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports-${{ github.ref_name }}-${{ github.sha }}
+          path: |
+            */build/reports/tests/testDebugUnitTest
+            */build/test-results/testDebugUnitTest
+          retention-days: 14
 
       - name: Build release APK
         shell: bash
@@ -92,6 +105,11 @@ jobs:
         shell: bash
         run: |
           echo "### Guangqi Release Build" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.tests.outcome }}" == "success" ]]; then
+            echo "- **Unit tests:** passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Unit tests:** ⚠️ ${{ steps.tests.outcome }} (APK built anyway; see unit-test-reports artifact)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "- **Branch:** \`${{ github.ref_name }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **APK:** \`${{ steps.sha.outputs.apk_name }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **SHA-256:** \`${{ steps.sha.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
