@@ -327,6 +327,9 @@ class SmoothVideoHostLifecycleTest {
         setField(target, "mfiTarget", MfiTarget.LOCAL)
         setField(target, "vpnReady", true)
         setField(target, "microphonePermissionResolved", true)
+        // The Guangqi startup automation gate (CarPlayStartup) has finished.
+        setField(target, "startupAutomationReady", true)
+        setField(target, "startupPrerequisitesRequested", true)
     }
 
     private fun finishTeardown() {

@@ -70,7 +70,8 @@ object CarPlayClusterDisplay {
     val scalePresets = listOf(100, STREAM_SCALE_PERCENT, 67, 125)
 
     private const val WIDTH_PHYSICAL_MM = 292 // a 12.3-inch 8:3 cluster panel; Apple Maps ignores it here
-    private const val FPS = 30
+    /** Default cluster stream rate. */
+    const val FPS = 30
 
     fun config(
         widthPixels: Int,
@@ -80,6 +81,7 @@ object CarPlayClusterDisplay {
         verticalStep: Int = 0,
         content: Content = Content.MAP,
         baseSafeArea: AirPlayInsets = SAFE_AREA_PERCENT,
+        fps: Int = FPS,
     ): AirPlayDisplayConfig {
         // Height rounds to a multiple of 8 and width follows it, so the panel's aspect is kept
         // (83 % of 1920x720 gives exactly 1600x600). The cluster scales the stream to the panel.
@@ -91,7 +93,7 @@ object CarPlayClusterDisplay {
             heightPixels = height,
             widthPhysicalMm = WIDTH_PHYSICAL_MM,
             heightPhysicalMm = Math.round(WIDTH_PHYSICAL_MM * height.toDouble() / width).toInt(),
-            fps = FPS,
+            fps = fps.coerceIn(1, FPS),
             primaryInputDevice = 0,
             features = 0,
             initialUrl = content.url,
