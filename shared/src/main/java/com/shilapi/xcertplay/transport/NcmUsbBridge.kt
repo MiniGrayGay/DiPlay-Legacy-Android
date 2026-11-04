@@ -65,6 +65,23 @@ class NcmUsbBridge internal constructor(
     private var ncmWriteSubmittedChunks = 0
     private var ncmWriteCompletedChunks = 0
     private var ncmWriteSuccessBytes = 0
+
+    // Throughput timing for diagnostic reports. Read-side values are only touched by the reader
+    // thread (under readLock); write-side values are guarded by perfLock.
+    private var perfReadCompletions = 0L
+    private var perfReadBytes = 0L
+    private var perfReadWaitNanos = 0L
+    private var perfReadReadyOnAwait = 0L
+    private var perfReadInFlightSum = 0L
+    private var perfFramesDelivered = 0L
+    private var perfDeliverNanos = 0L
+    private var perfDeliverMaxNanos = 0L
+    private var perfWindowStartNs = System.nanoTime()
+    private val perfLock = Any()
+    private var perfWriteCalls = 0L
+    private var perfWriteBytes = 0L
+    private var perfWriteNanos = 0L
+    private var perfWriteMaxNanos = 0L
     @Volatile var lastBulkInSuccessNs = 0L
         private set
     @Volatile var lastBulkOutSuccessNs = 0L
@@ -91,9 +108,24 @@ class NcmUsbBridge internal constructor(
     // section for the whole wait, which blocks ART's GC thread flip and, with it, every other USB
     // transfer (seen as ~0.8 s stalls of video and audio). A timed-out request stays queued, so no
     // data is lost between calls. SharedUsbDeviceConnection routes USBMUX/NCM completions.
-    private val directReadBuffer = ByteBuffer.allocateDirect(usbTransferSize(realSdkInt(), READ_CHUNK_BYTES))
-    private var readRequest: UsbRequest? = null
-    private var readQueued = false
+    //
+    // Several reads stay queued at once. With a single request the controller stopped reading
+    // while the previous chunk's frames were parsed and pushed through lwIP, so the phone's
+    // bulk IN sat NAKed for the whole processing time. Requests complete in submission order on
+    // one endpoint, so the ring is awaited head first and every completed slot is requeued at
+    // the tail right away. Guarded by stateLock (queue state) and readLock (head, buffers).
+    private class ReadSlot(val buffer: ByteBuffer) {
+        var request: UsbRequest? = null
+        var queued = false
+    }
+    private val readSlots = Array(READ_REQUEST_COUNT) {
+        ReadSlot(ByteBuffer.allocateDirect(usbTransferSize(realSdkInt(), READ_CHUNK_BYTES)))
+    }
+    private var readHead = 0
+    /** Set when the controller refuses a second concurrent read; the ring then keeps one. */
+    private var concurrentReadsDisabled = false
+    /** Bytes the controller accepted for the head read; extra reads reuse the same size. */
+    private var queuedReadBytes = 0
     private val readQueuePolicy = UsbReadQueuePolicy(
         if (realSdkInt() < Build.VERSION_CODES.P) USBFS_BULK_URB_CEILING_BYTES else Int.MAX_VALUE,
     )
@@ -116,6 +148,7 @@ class NcmUsbBridge internal constructor(
             this.sequence.also { this.sequence = (this.sequence + 1) and 0xffff }
         }
         val block = Ntb16Codec.build(frame, sequence)
+        val perfStarted = System.nanoTime()
         ensureWriteWatchdog()
         ensureStallWatchdog()
         writeInFlightSinceNs = System.nanoTime()
@@ -153,6 +186,13 @@ class NcmUsbBridge internal constructor(
             }
         } finally {
             writeInFlightSinceNs = 0L
+            val elapsed = System.nanoTime() - perfStarted
+            synchronized(perfLock) {
+                perfWriteCalls++
+                perfWriteBytes += block.size
+                perfWriteNanos += elapsed
+                if (elapsed > perfWriteMaxNanos) perfWriteMaxNanos = elapsed
+            }
         }
         // Before StartCarPlaySession the phone keeps the NCM data path NAKed. Android reports the
         // resulting timeout as -1; it is not a detach and later packets must be allowed to retry.
@@ -344,23 +384,128 @@ class NcmUsbBridge internal constructor(
                 if (frames.isNotEmpty()) return pollFrame()
                 val remainingNanos = deadline - System.nanoTime()
                 if (remainingNanos <= 0) return null
-                val chunkLength =
-                    readChunk((remainingNanos + NANOS_PER_MILLISECOND - 1) / NANOS_PER_MILLISECOND)
-                        ?: continue
-                appendBuffered(readBuffer, chunkLength)
+                readChunk((remainingNanos + NANOS_PER_MILLISECOND - 1) / NANOS_PER_MILLISECOND)
             }
         }
     }
 
+    /** Receives Ethernet frames without allocating; see [recvInto]. */
+    fun interface FrameSink {
+        /** [buffer] is only valid during the call; copy anything that must outlive it. */
+        fun onFrame(buffer: ByteArray, offset: Int, length: Int)
+    }
+
+    /**
+     * Delivers every complete frame that is available, reading from USB until at least one
+     * arrives or [timeoutMillis] elapses. Frames are handed to [sink] straight out of the
+     * receive buffer, in wire order, with no per-frame allocation. Returns the frame count
+     * (0 on timeout). Do not mix with [recv] on another thread.
+     */
+    fun recvInto(timeoutMillis: Long, sink: FrameSink): Int {
+        require(timeoutMillis > 0) { "timeoutMillis must be positive" }
+        synchronized(readLock) {
+            checkOpen()
+            var delivered = 0
+            while (frames.isNotEmpty()) {
+                val frame = pollFrame()
+                sink.onFrame(frame, 0, frame.size)
+                delivered++
+            }
+            if (delivered > 0) return delivered
+
+            val deadline = System.nanoTime() + timeoutMillis * NANOS_PER_MILLISECOND
+            while (true) {
+                val started = System.nanoTime()
+                delivered = drainFrames(sink)
+                if (delivered > 0) {
+                    val elapsed = System.nanoTime() - started
+                    perfFramesDelivered += delivered
+                    perfDeliverNanos += elapsed
+                    if (elapsed > perfDeliverMaxNanos) perfDeliverMaxNanos = elapsed
+                    return delivered
+                }
+                val remainingNanos = deadline - System.nanoTime()
+                if (remainingNanos <= 0) return 0
+                readChunk((remainingNanos + NANOS_PER_MILLISECOND - 1) / NANOS_PER_MILLISECOND)
+            }
+        }
+    }
+
+    /** One diagnostic window of NCM throughput timing; see [takePerfWindow]. */
+    data class PerfWindow(
+        val windowMillis: Long,
+        val readCompletions: Long,
+        val readBytes: Long,
+        val readWaitMillis: Long,
+        /** Completions that were already done when awaited: the reader is the bottleneck. */
+        val readReadyOnAwait: Long,
+        /** Average reads queued while waiting (target [requestsConfigured]). */
+        val readInFlightAvg: Double,
+        val requestsConfigured: Int,
+        val concurrentReadsDisabled: Boolean,
+        val framesDelivered: Long,
+        val deliverMillis: Long,
+        val deliverMaxMicros: Long,
+        val writeCalls: Long,
+        val writeBytes: Long,
+        val writeMillis: Long,
+        val writeMaxMicros: Long,
+        val writeAvgMicros: Long,
+    )
+
+    /** Returns and restarts the timing window. Call from the reader thread. */
+    fun takePerfWindow(): PerfWindow {
+        val now = System.nanoTime()
+        val writes = synchronized(perfLock) {
+            val values = longArrayOf(perfWriteCalls, perfWriteBytes, perfWriteNanos, perfWriteMaxNanos)
+            perfWriteCalls = 0
+            perfWriteBytes = 0
+            perfWriteNanos = 0
+            perfWriteMaxNanos = 0
+            values
+        }
+        val window = PerfWindow(
+            windowMillis = (now - perfWindowStartNs) / NANOS_PER_MILLISECOND,
+            readCompletions = perfReadCompletions,
+            readBytes = perfReadBytes,
+            readWaitMillis = perfReadWaitNanos / NANOS_PER_MILLISECOND,
+            readReadyOnAwait = perfReadReadyOnAwait,
+            readInFlightAvg = if (perfReadCompletions == 0L) 0.0 else perfReadInFlightSum.toDouble() / perfReadCompletions,
+            requestsConfigured = if (useAsyncRead) READ_REQUEST_COUNT else 0,
+            concurrentReadsDisabled = concurrentReadsDisabled,
+            framesDelivered = perfFramesDelivered,
+            deliverMillis = perfDeliverNanos / NANOS_PER_MILLISECOND,
+            deliverMaxMicros = perfDeliverMaxNanos / 1_000,
+            writeCalls = writes[0],
+            writeBytes = writes[1],
+            writeMillis = writes[2] / NANOS_PER_MILLISECOND,
+            writeMaxMicros = writes[3] / 1_000,
+            writeAvgMicros = if (writes[0] == 0L) 0 else writes[2] / writes[0] / 1_000,
+        )
+        perfWindowStartNs = now
+        perfReadCompletions = 0
+        perfReadBytes = 0
+        perfReadWaitNanos = 0
+        perfReadReadyOnAwait = 0
+        perfReadInFlightSum = 0
+        perfFramesDelivered = 0
+        perfDeliverNanos = 0
+        perfDeliverMaxNanos = 0
+        return window
+    }
+
     override fun close() {
         statusRunning.set(false)
-        val requestToClose = synchronized(stateLock) {
+        val requestsToClose = synchronized(stateLock) {
             if (closed) return
             closed = true
-            readRequest
+            readSlots.mapNotNull { slot -> slot.request?.let { it to slot.queued } }
         }
-        // Wakes a reader blocked in requestWait(); it then observes the closed state.
-        val cancelled = runCatching { requestToClose?.cancel() }.getOrNull() == true
+        // Wakes a reader blocked in requestWait(); it then observes the closed state. Only a
+        // queued request has a URB to cancel; an idle one is simply closed below.
+        val cancelled = requestsToClose.map { (request, queued) ->
+            queued && runCatching { request.cancel() }.getOrNull() == true
+        }
         statusThread?.let { thread ->
             thread.interrupt()
             try {
@@ -387,21 +532,23 @@ class NcmUsbBridge internal constructor(
         // Freeing the request before that completion hands freed memory to REAPURB
         // and libc aborts. Wait for the completion; if it is not observed on legacy
         // Android, leak the request instead of crashing the process.
-        var reaped = false
-        if (requestToClose != null && cancelled) {
-            reaped = try {
-                sharedConnection.await(requestToClose, REQUEST_DRAIN_TIMEOUT_MILLIS)
+        val drainDeadline = System.nanoTime() + REQUEST_DRAIN_TIMEOUT_MILLIS * NANOS_PER_MILLISECOND
+        val reaped = requestsToClose.mapIndexed { index, (request, _) ->
+            if (!cancelled[index]) return@mapIndexed false
+            val remaining = (drainDeadline - System.nanoTime()) / NANOS_PER_MILLISECOND
+            try {
+                sharedConnection.await(request, remaining.coerceAtLeast(1L))
                 true
             } catch (_: Exception) {
                 false
             }
         }
         sharedConnection.release()
-        requestToClose?.let(sharedConnection::forget)
-        if (requestToClose == null || reaped || !cancelled ||
-            realSdkInt() >= Build.VERSION_CODES.O
-        ) {
-            runCatching { requestToClose?.close() }
+        requestsToClose.forEachIndexed { index, (request, _) ->
+            sharedConnection.forget(request)
+            if (reaped[index] || !cancelled[index] || realSdkInt() >= Build.VERSION_CODES.O) {
+                runCatching { request.close() }
+            }
         }
     }
 
@@ -437,35 +584,66 @@ class NcmUsbBridge internal constructor(
     private fun ByteArray.hex(limit: Int): String =
         take(limit).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
-    private fun drainFrames() {
-        while (true) {
-            // wBlockLength describes the complete NTB. A packet-aligned USB transfer may end
-            // with a ZLP (no byte in the buffer), or carry one zero byte to force a short packet.
-            // Do not wait for that optional byte or consume the next NTB's header as padding.
-            // Keep this state when the pad/header arrives in a later USB completion.
-            if (optionalShortPacketPad && bufferedSize > 0) {
-                optionalShortPacketPad = false
-                when (buffered[0].toInt() and 0xff) {
-                    0 -> discard(1)
-                    Ntb16Codec.NTH16_SIG and 0xff -> Unit // The next header is validated below.
-                    else -> if (!resynchronize("Invalid NTB16 short-packet pad")) return
+    /**
+     * Parses every complete NTB in the buffer. Frames go to [sink] in place when one is given,
+     * otherwise they are copied onto the [recv] queue. Consumed bytes are compacted once at the
+     * end rather than after every block. Returns the number of frames produced.
+     */
+    private fun drainFrames(sink: FrameSink? = null): Int {
+        var produced = 0
+        var start = 0
+        try {
+            while (true) {
+                // wBlockLength describes the complete NTB. A packet-aligned USB transfer may end
+                // with a ZLP (no byte in the buffer), or carry one zero byte to force a short packet.
+                // Do not wait for that optional byte or consume the next NTB's header as padding.
+                // Keep this state when the pad/header arrives in a later USB completion.
+                if (optionalShortPacketPad && bufferedSize > start) {
+                    optionalShortPacketPad = false
+                    when (buffered[start].toInt() and 0xff) {
+                        0 -> start += 1
+                        Ntb16Codec.NTH16_SIG and 0xff -> Unit // The next header is validated below.
+                        else -> {
+                            discard(start)
+                            start = 0
+                            if (!resynchronize("Invalid NTB16 short-packet pad")) return produced
+                        }
+                    }
                 }
+                if (bufferedSize - start < NTH16_LENGTH) return produced
+                val blockLength = readU16(buffered, start + 8)
+                if (readU32(buffered, start) != Ntb16Codec.NTH16_SIG) {
+                    discard(start)
+                    start = 0
+                    if (!resynchronize("NCM read buffer does not begin with an NTB16 header")) return produced
+                    continue
+                }
+                if (blockLength < 28) {
+                    discard(start)
+                    start = 0
+                    if (!resynchronize("Invalid NTB16 block length $blockLength")) return produced
+                    continue
+                }
+                if (bufferedSize - start < blockLength) return produced
+                val source = buffered
+                if (sink != null) {
+                    Ntb16Codec.forEachDatagram(source, start, blockLength) { offset, length ->
+                        inboundFrameSeen = true
+                        sink.onFrame(source, offset, length)
+                        produced++
+                    }
+                } else {
+                    Ntb16Codec.forEachDatagram(source, start, blockLength) { offset, length ->
+                        enqueueFrame(source.copyOfRange(offset, offset + length))
+                        produced++
+                    }
+                }
+                start += blockLength
+                optionalShortPacketPad = blockLength % usbPacketSize == 0
+                finishResync()
             }
-            if (bufferedSize < NTH16_LENGTH) return
-            val blockLength = readU16(buffered, 8)
-            if (readU32(buffered, 0) != Ntb16Codec.NTH16_SIG) {
-                if (!resynchronize("NCM read buffer does not begin with an NTB16 header")) return
-                continue
-            }
-            if (blockLength < 28) {
-                if (!resynchronize("Invalid NTB16 block length $blockLength")) return
-                continue
-            }
-            if (bufferedSize < blockLength) return
-            for (frame in Ntb16Codec.parse(buffered, 0, blockLength)) enqueueFrame(frame)
-            discard(blockLength)
-            optionalShortPacketPad = blockLength % usbPacketSize == 0
-            finishResync()
+        } finally {
+            discard(start)
         }
     }
 
@@ -519,6 +697,19 @@ class NcmUsbBridge internal constructor(
     }
 
     private fun appendBuffered(source: ByteArray, length: Int) {
+        ensureBufferedCapacity(length)
+        source.copyInto(buffered, bufferedSize, 0, length)
+        bufferedSize += length
+    }
+
+    /** Copies a completed read straight into the NTB buffer (one copy, no staging array). */
+    private fun appendBuffered(source: ByteBuffer, length: Int) {
+        ensureBufferedCapacity(length)
+        source.get(buffered, bufferedSize, length)
+        bufferedSize += length
+    }
+
+    private fun ensureBufferedCapacity(length: Int) {
         val required = bufferedSize + length
         if (required > buffered.size) {
             val capacity = maxOf(required, maxOf(READ_CHUNK_BYTES, buffered.size * 2))
@@ -526,8 +717,6 @@ class NcmUsbBridge internal constructor(
             buffered.copyInto(grown, 0, 0, bufferedSize)
             buffered = grown
         }
-        source.copyInto(buffered, bufferedSize, 0, length)
-        bufferedSize += length
     }
 
     private fun enqueueFrame(frame: ByteArray) {
@@ -546,72 +735,139 @@ class NcmUsbBridge internal constructor(
         return frame
     }
 
+    /** Reads one USB completion into the NTB buffer; returns its byte count, or null on timeout. */
     private fun readChunk(timeoutMillis: Long): Int? {
         if (!useAsyncRead) return readChunkSynchronously(timeoutMillis)
         checkOpen()
-        var acceptedFallback: UsbReadQueueResult? = null
-        val request = try {
+        val notes = ArrayList<String>(0)
+        val (slot, inFlight) = try {
             // Publish and queue atomically with close(), so detach cannot miss a new request.
             synchronized(stateLock) {
                 checkOpenLocked()
-                val current = readRequest ?: UsbRequest().also {
-                    val framework = sharedConnection.frameworkConnection
-                        ?: throw failSession("async NCM read requires a framework USB connection")
-                    if (!it.initialize(framework, inEndpoint)) {
-                        it.close()
-                        throw failSession("Android could not initialize the NCM read request")
-                    }
-                    readRequest = it
-                }
-                if (!readQueued) {
-                    directReadBuffer.clear()
-                    val queued = readQueuePolicy.queue(directReadBuffer, ::checkOpenLocked) {
-                        sharedConnection.queue(current, it)
-                    }
-                    if (!queued.queued) throw failSession(
-                        "Android could not queue the NCM read request (api=${Build.VERSION.SDK_INT} " +
-                            "endpoint=${describeUsbEndpoint(inEndpoint)} firstBytes=${queued.firstBytes} " +
-                            "fallbackBytes=${queued.fallbackBytes ?: "not_attempted"})",
-                    )
-                    readQueued = true
-                    if (queued.fallbackBytes != null) acceptedFallback = queued
-                }
-                current
+                fillReadRingLocked(notes)
+                readSlots[readHead] to readSlots.count { it.queued }
             }
-        } catch (error: RuntimeException) {
-            throw failSession("NCM read failed", error)
-        }
-        // Emit outside stateLock; diagnostic callbacks must not affect queue or close behavior.
-        acceptedFallback?.let { queued ->
-            runCatching {
-                onDiagnostic(
-                    "NCM read queue compatibility fallback api=${Build.VERSION.SDK_INT} " +
-                        "endpoint=${describeUsbEndpoint(inEndpoint)} firstBytes=${queued.firstBytes} " +
-                        "fallbackBytes=${queued.fallbackBytes}",
-                )
-            }
-        }
-        try {
-            val completed = try {
-                sharedConnection.await(request, timeoutMillis)
-            } catch (_: TimeoutException) {
-                // Nothing arrived yet; the request stays queued for the next call. USBMUX owns
-                // authoritative detach/failure detection for the same phone.
-                return null
-            }
-            if (completed !== request) throw failSession("Android completed an unexpected NCM request")
-            readQueued = false
-            val transferred = directReadBuffer.position()
-            if (transferred <= 0) return null
-            lastBulkInSuccessNs = System.nanoTime()
-            directReadBuffer.flip()
-            directReadBuffer.get(readBuffer, 0, transferred)
-            return transferred
         } catch (error: IphoneUsbException) {
             throw error
         } catch (error: RuntimeException) {
             throw failSession("NCM read failed", error)
         }
+        // Emit outside stateLock; diagnostic callbacks must not affect queue or close behavior.
+        emitReadNotes(notes)
+        val request = slot.request ?: throw failSession("NCM read ring lost its head request")
+        val waitStarted = System.nanoTime()
+        try {
+            val completed = try {
+                sharedConnection.await(request, timeoutMillis)
+            } catch (_: TimeoutException) {
+                // Nothing arrived yet; the requests stay queued for the next call. USBMUX owns
+                // authoritative detach/failure detection for the same phone.
+                perfReadWaitNanos += System.nanoTime() - waitStarted
+                return null
+            }
+            val waited = System.nanoTime() - waitStarted
+            perfReadWaitNanos += waited
+            if (waited < READY_ON_AWAIT_NANOS) perfReadReadyOnAwait++
+            perfReadInFlightSum += inFlight
+            if (completed !== request) throw failSession("Android completed an unexpected NCM request")
+            val transferred = synchronized(stateLock) {
+                slot.queued = false
+                readHead = (readHead + 1) % readSlots.size
+                slot.buffer.position()
+            }
+            if (transferred > 0) {
+                lastBulkInSuccessNs = System.nanoTime()
+                perfReadCompletions++
+                perfReadBytes += transferred
+                slot.buffer.flip()
+                appendBuffered(slot.buffer, transferred)
+            }
+            // Requeue at once so the controller keeps reading while these frames are processed.
+            try {
+                synchronized(stateLock) {
+                    checkOpenLocked()
+                    fillReadRingLocked(notes)
+                }
+            } catch (error: IphoneUsbException) {
+                throw error
+            } catch (error: RuntimeException) {
+                throw failSession("NCM read failed", error)
+            }
+            emitReadNotes(notes)
+            return if (transferred > 0) transferred else null
+        } catch (error: IphoneUsbException) {
+            throw error
+        } catch (error: RuntimeException) {
+            throw failSession("NCM read failed", error)
+        }
+    }
+
+    /**
+     * Queues idle ring slots in ring order starting at the head, so submission order always
+     * matches the order they are awaited in. Stops at the first refusal; a refused head read
+     * fails the session as before, a refused extra read falls back to a single request.
+     */
+    private fun fillReadRingLocked(notes: MutableList<String>) {
+        for (step in readSlots.indices) {
+            val slot = readSlots[(readHead + step) % readSlots.size]
+            if (slot.queued) continue
+            val anyQueued = readSlots.any { it.queued }
+            if (anyQueued && concurrentReadsDisabled) return
+            val request = slot.request ?: UsbRequest().also {
+                val framework = sharedConnection.frameworkConnection
+                    ?: throw failSession("async NCM read requires a framework USB connection")
+                if (!it.initialize(framework, inEndpoint)) {
+                    it.close()
+                    throw failSession("Android could not initialize the NCM read request")
+                }
+                slot.request = it
+            }
+            slot.buffer.clear()
+            if (!anyQueued) {
+                val queued = readQueuePolicy.queue(slot.buffer, ::checkOpenLocked) {
+                    sharedConnection.queue(request, it)
+                }
+                if (!queued.queued) throw failSession(
+                    "Android could not queue the NCM read request (api=${Build.VERSION.SDK_INT} " +
+                        "endpoint=${describeUsbEndpoint(inEndpoint)} firstBytes=${queued.firstBytes} " +
+                        "fallbackBytes=${queued.fallbackBytes ?: "not_attempted"})",
+                )
+                queuedReadBytes = queued.fallbackBytes ?: queued.firstBytes
+                slot.queued = true
+                if (queued.fallbackBytes != null) {
+                    notes += "NCM read queue compatibility fallback api=${Build.VERSION.SDK_INT} " +
+                        "endpoint=${describeUsbEndpoint(inEndpoint)} firstBytes=${queued.firstBytes} " +
+                        "fallbackBytes=${queued.fallbackBytes}"
+                }
+            } else {
+                // Extra reads reuse the size the head read was accepted at; they never walk the
+                // compatibility ladder, so a controller that limits concurrency cannot shrink
+                // the size the single-read path depends on.
+                slot.buffer.limit(minOf(slot.buffer.capacity(), queuedReadBytes.coerceAtLeast(1)))
+                val accepted = try {
+                    sharedConnection.queue(request, slot.buffer)
+                } catch (error: RuntimeException) {
+                    notes += "NCM concurrent read refused (${error.javaClass.simpleName}: ${error.message}); " +
+                        "using one read request api=${Build.VERSION.SDK_INT}"
+                    false
+                }
+                if (!accepted) {
+                    if (notes.isEmpty()) {
+                        notes += "NCM concurrent read refused; using one read request api=${Build.VERSION.SDK_INT}"
+                    }
+                    concurrentReadsDisabled = true
+                    slot.buffer.clear()
+                    return
+                }
+                slot.queued = true
+            }
+        }
+    }
+
+    private fun emitReadNotes(notes: MutableList<String>) {
+        if (notes.isEmpty()) return
+        for (note in notes) runCatching { onDiagnostic(note) }
+        notes.clear()
     }
 
     private fun readChunkSynchronously(timeoutMillis: Long): Int? {
@@ -620,7 +876,12 @@ class NcmUsbBridge internal constructor(
         return try {
             sharedConnection.bulkTransfer(inEndpoint, readBuffer, readBuffer.size, timeout)
                 .takeIf { it > 0 }
-                ?.also { lastBulkInSuccessNs = System.nanoTime() }
+                ?.also {
+                    lastBulkInSuccessNs = System.nanoTime()
+                    perfReadCompletions++
+                    perfReadBytes += it
+                    appendBuffered(readBuffer, it)
+                }
         } catch (error: RuntimeException) {
             throw failSession("NCM synchronous read failed", error)
         }
@@ -847,6 +1108,10 @@ class NcmUsbBridge internal constructor(
         }
 
         private const val READ_CHUNK_BYTES = 32 * 1024
+        /** Concurrent bulk IN reads; each is at most 16 KiB before Android P. */
+        internal const val READ_REQUEST_COUNT = 4
+        /** An await shorter than this found its read already complete. */
+        private const val READY_ON_AWAIT_NANOS = 300_000L
         private const val USB_PACKET_SIZE = 512
         private const val NTH16_LENGTH = 12
         private const val MAX_RESYNCS_PER_WINDOW = 16

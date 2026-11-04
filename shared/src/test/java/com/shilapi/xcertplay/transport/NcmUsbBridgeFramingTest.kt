@@ -136,6 +136,67 @@ class NcmUsbBridgeFramingTest {
         }
     }
 
+    @Test fun severalReadsStayQueuedWhileFramesAreProcessed() {
+        repeat(6) { NcmFramingReplay.chunks.add(Ntb16Codec.build(byteArrayOf(it.toByte(), 1, 2, 3), it)) }
+        withBridge { ncm ->
+            repeat(6) { assertArrayEquals(byteArrayOf(it.toByte(), 1, 2, 3), ncm.recv(50)) }
+        }
+        assertEquals(NcmUsbBridge.READ_REQUEST_COUNT, NcmFramingReplay.maxPending)
+    }
+
+    @Test fun theReadRingKeepsWireOrderAcrossSplitBlocks() {
+        val frames = (0 until 30).map { index -> ByteArray(200 + index * 37) { (index * 13 + it).toByte() } }
+        val stream = frames.mapIndexed { index, frame -> Ntb16Codec.build(frame, index) }.reduce(ByteArray::plus)
+        var offset = 0
+        var size = 1
+        while (offset < stream.size) {
+            val end = minOf(stream.size, offset + size)
+            NcmFramingReplay.chunks.add(stream.copyOfRange(offset, end))
+            offset = end
+            size = size * 3 % 1700 + 1
+        }
+        withBridge { ncm ->
+            val received = ArrayList<ByteArray>()
+            while (received.size < frames.size) {
+                ncm.recvInto(50) { buffer, start, length -> received += buffer.copyOfRange(start, start + length) }
+            }
+            frames.forEachIndexed { index, frame -> assertArrayEquals("frame $index", frame, received[index]) }
+        }
+    }
+
+    @Test fun recvIntoDeliversEveryBufferedFrameInPlace() {
+        val second = ByteArray(996) { (it * 17).toByte() }
+        NcmFramingReplay.chunks.add(
+            Ntb16Codec.build(smallFrame, 1) + Ntb16Codec.build(second, 2) + Ntb16Codec.build(smallFrame, 3),
+        )
+        withBridge { ncm ->
+            val received = ArrayList<ByteArray>()
+            val delivered = ncm.recvInto(50) { buffer, start, length ->
+                received += buffer.copyOfRange(start, start + length)
+            }
+            assertEquals(3, delivered)
+            assertArrayEquals(smallFrame, received[0])
+            assertArrayEquals(second, received[1])
+            assertArrayEquals(smallFrame, received[2])
+            assertEquals(0, ncm.recvInto(20) { _, _, _ -> throw AssertionError("no frame expected") })
+            val window = ncm.takePerfWindow()
+            assertEquals(1, window.readCompletions)
+            assertEquals(3, window.framesDelivered)
+            assertEquals(NcmUsbBridge.READ_REQUEST_COUNT, window.requestsConfigured)
+        }
+    }
+
+    @Test fun aRefusedConcurrentReadFallsBackToOneRequest() {
+        NcmFramingReplay.refuseWhenPending = 1
+        repeat(3) { NcmFramingReplay.chunks.add(Ntb16Codec.build(byteArrayOf(it.toByte(), 9), it)) }
+        val diagnostics = withBridge { ncm ->
+            repeat(3) { assertArrayEquals(byteArrayOf(it.toByte(), 9), ncm.recv(50)) }
+            assertTrue(ncm.takePerfWindow().concurrentReadsDisabled)
+        }
+        assertEquals(1, NcmFramingReplay.maxPending)
+        assertEquals(1, diagnostics.count { it.startsWith("NCM concurrent read refused") })
+    }
+
     private fun checkSplitFollowingBlock(padded: Boolean) {
         NcmFramingReplay.chunks.add(unpadded(alignedFrame, 1))
         if (padded) NcmFramingReplay.chunks.add(byteArrayOf(0))
@@ -184,11 +245,18 @@ class NcmUsbBridgeFramingTest {
 }
 
 object NcmFramingReplay {
+    /** Each completion fills the oldest queued read, as a bulk endpoint does. */
     val chunks = ArrayDeque<ByteArray>()
-    var request: UsbRequest? = null
-    var buffer: ByteBuffer? = null
+    val pending = ArrayDeque<Pair<UsbRequest, ByteBuffer>>()
+    val cancelled = ArrayDeque<UsbRequest>()
     var completions = 0
-    fun reset() { chunks.clear(); request = null; buffer = null; completions = 0 }
+    var maxPending = 0
+    /** Refuse queue() while this many reads are already pending (null = never). */
+    var refuseWhenPending: Int? = null
+    fun reset() {
+        chunks.clear(); pending.clear(); cancelled.clear()
+        completions = 0; maxPending = 0; refuseWhenPending = null
+    }
 }
 
 @Implements(UsbRequest::class)
@@ -196,21 +264,30 @@ class NcmFramingRequestShadow {
     @RealObject lateinit var request: UsbRequest
     @Implementation fun initialize(connection: UsbDeviceConnection, endpoint: UsbEndpoint) = true
     @Implementation fun queue(buffer: ByteBuffer): Boolean {
-        NcmFramingReplay.request = request
-        NcmFramingReplay.buffer = buffer
+        val limit = NcmFramingReplay.refuseWhenPending
+        if (limit != null && NcmFramingReplay.pending.size >= limit) return false
+        NcmFramingReplay.pending.addLast(request to buffer)
+        NcmFramingReplay.maxPending = maxOf(NcmFramingReplay.maxPending, NcmFramingReplay.pending.size)
         return true
     }
-    @Implementation fun cancel() = true
+    @Implementation fun cancel(): Boolean {
+        val entry = NcmFramingReplay.pending.firstOrNull { it.first === request } ?: return false
+        NcmFramingReplay.pending.remove(entry)
+        NcmFramingReplay.cancelled.addLast(request)
+        return true
+    }
     @Implementation fun close() = Unit
 }
 
 @Implements(UsbDeviceConnection::class)
 class NcmFramingConnectionShadow {
     @Implementation fun requestWait(timeoutMillis: Long): UsbRequest {
-        val chunk = NcmFramingReplay.chunks.pollFirst() ?: throw TimeoutException()
-        NcmFramingReplay.buffer!!.put(chunk)
+        NcmFramingReplay.cancelled.pollFirst()?.let { return it }
+        if (NcmFramingReplay.chunks.isEmpty()) throw TimeoutException()
+        val (request, buffer) = NcmFramingReplay.pending.pollFirst() ?: throw TimeoutException()
+        buffer.put(NcmFramingReplay.chunks.pollFirst())
         NcmFramingReplay.completions += 1
-        return NcmFramingReplay.request!!
+        return request
     }
     @Implementation fun close() = Unit
 }

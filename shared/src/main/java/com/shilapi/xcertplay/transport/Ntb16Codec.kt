@@ -11,7 +11,7 @@ object Ntb16Codec {
     const val NTH16_SIG = 0x484d434e
     const val NDP16_SIG = 0x304d434e
 
-    private const val NTH_LENGTH = 12
+    internal const val NTH_LENGTH = 12
     private const val NDP_LENGTH = 16
     private const val DATAGRAM_INDEX = 28
     private const val USB_PACKET_SIZE = 512
@@ -53,39 +53,53 @@ object Ntb16Codec {
 
     /** Parses one NTB16 block from [offset] without copying the containing buffer. */
     fun parse(block: ByteArray, offset: Int, length: Int): List<ByteArray> {
+        val datagrams = ArrayList<ByteArray>(1)
+        forEachDatagram(block, offset, length) { start, size ->
+            datagrams.add(block.copyOfRange(start, start + size))
+        }
+        return datagrams
+    }
+
+    /**
+     * Calls [onDatagram] with the absolute offset and length of each Ethernet frame in one NTB16
+     * block, in wire order, without allocating. Validation is identical to [parse].
+     */
+    internal inline fun forEachDatagram(block: ByteArray, offset: Int, length: Int, onDatagram: (Int, Int) -> Unit) {
         require(offset >= 0 && length >= 0 && offset <= block.size - length) {
             "NTB16 range is outside the source buffer"
         }
         val end = offset + length
-        if (length < NTH_LENGTH || readU32(block, offset) != NTH16_SIG) return emptyList()
+        if (length < NTH_LENGTH || u32(block, offset) != NTH16_SIG) return
 
-        val datagrams = ArrayList<ByteArray>(1)
-        var ndpOffset = offset + readU16(block, offset + 10)
+        var ndpOffset = offset + u16(block, offset + 10)
         var hops = 0
         val maxHops = maxOf(1, length / 4)
         while (ndpOffset != 0 && hops < maxHops) {
             if (ndpOffset < offset || ndpOffset + 12 > end) break
-            if (readU32(block, ndpOffset) and 0x00ffffff != NDP16_SIG and 0x00ffffff) break
-            val ndpLength = readU16(block, ndpOffset + 4)
-            val nextNdp = readU16(block, ndpOffset + 6)
+            if (u32(block, ndpOffset) and 0x00ffffff != NDP16_SIG and 0x00ffffff) break
+            val ndpLength = u16(block, ndpOffset + 4)
+            val nextNdp = u16(block, ndpOffset + 6)
             var entry = ndpOffset + 8
             val ndpEnd = minOf(ndpOffset + ndpLength, end)
             while (entry + 4 <= ndpEnd) {
-                val datagramIndex = readU16(block, entry)
-                val datagramLength = readU16(block, entry + 2)
+                val datagramIndex = u16(block, entry)
+                val datagramLength = u16(block, entry + 2)
                 if (datagramIndex == 0 || datagramLength == 0) break
                 val datagramStart = offset + datagramIndex
                 val datagramEnd = datagramStart + datagramLength
                 if (datagramStart >= offset && datagramStart <= end && datagramEnd <= end) {
-                    datagrams.add(block.copyOfRange(datagramStart, datagramEnd))
+                    onDatagram(datagramStart, datagramLength)
                 }
                 entry += 4
             }
             ndpOffset = if (nextNdp == 0) 0 else offset + nextNdp
             hops++
         }
-        return datagrams
     }
+
+    internal fun u16(source: ByteArray, offset: Int): Int = readU16(source, offset)
+
+    internal fun u32(source: ByteArray, offset: Int): Int = readU32(source, offset)
 
     private fun putU16(target: ByteArray, offset: Int, value: Int) {
         target[offset] = value.toByte()

@@ -3,6 +3,7 @@ package com.shilapi.xcertplay.transport
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbRequest
 import android.os.Build
+import android.os.Process
 import com.shilapi.xcertplay.compat.realSdkInt
 import java.io.Closeable
 import java.nio.ByteBuffer
@@ -23,7 +24,12 @@ internal class UsbRequestCompat : Closeable {
     private var closed = false
 
     private val waitExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "xcertplay-usb-wait").apply { isDaemon = true }
+        Thread({
+            // Every pre-O bulk IN completion (USBMUX and NCM) is reaped on this thread, so it is
+            // on the video path. Platform-signed builds may run it at audio priority.
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
+            runnable.run()
+        }, "xcertplay-usb-wait").apply { isDaemon = true }
     }
     @Volatile
     private var inFlight: Future<UsbRequest?>? = null

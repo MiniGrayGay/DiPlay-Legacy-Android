@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.network
 
+import android.os.Process
 import android.util.Log
 import com.shilapi.xcertplay.transport.EthernetIpv6Codec
 import com.shilapi.xcertplay.transport.NcmUsbBridge
@@ -97,6 +98,17 @@ class LwipNcmBridge(
         onTxFrameCallback = ::onLwipTxFrame,
     )
 
+    /** Allocated once; the NCM reader hands every frame to it in place. */
+    private val rxSink = NcmUsbBridge.FrameSink { buffer, offset, length -> onInboundFrame(buffer, offset, length) }
+
+    // NCM_PERF window state. perf* fields are only touched by the RX thread.
+    private var perfFastFrames = 0L
+    private var perfSlowFrames = 0L
+    private var lastPerfLogNs = System.nanoTime()
+    private val perfNative = LongArray(LwipNcmNative.PERF_COUNT)
+    private val txQueueMaxDepth = AtomicInteger(0)
+    private val droppedTxWindow = AtomicInteger(0)
+
     fun start() {
         check(running.compareAndSet(false, true)) { "bridge is already started" }
 
@@ -122,19 +134,31 @@ class LwipNcmBridge(
 
     /** Ports with a live listener this session; TCP to any other port is stale traffic. */
     private val registeredTcpPorts = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+    /** Primitive copy of [registeredTcpPorts] for the per-frame fast path (no boxing). */
+    @Volatile private var registeredTcpPortArray = IntArray(0)
     /** Issue #270: TCP packets aimed at a previous session's dataPort, counted for diagnosis. */
     val stalePortTcpPackets = AtomicInteger(0)
     private var stalePortLogBudget = 4
 
     fun registerPort(port: Int, isTcp: Boolean) {
         lwipNative.registerPort(port, isTcp)
-        if (isTcp) registeredTcpPorts += port
+        if (isTcp) {
+            registeredTcpPorts += port
+            registeredTcpPortArray = registeredTcpPorts.toIntArray()
+        }
     }
 
     private fun enqueueTxFrame(frame: ByteArray, tag: String = "lwip"): Boolean {
         if (!running.get()) return false
         val queued = txQueue.offer(frame)
-        if (!queued) {
+        if (queued) {
+            val depth = txQueue.size
+            while (true) {
+                val max = txQueueMaxDepth.get()
+                if (depth <= max || txQueueMaxDepth.compareAndSet(max, depth)) break
+            }
+        } else {
+            droppedTxWindow.incrementAndGet()
             droppedTxFrames.incrementAndGet()
             if (txDropLogBudget > 0) {
                 txDropLogBudget--
@@ -149,6 +173,7 @@ class LwipNcmBridge(
     }
 
     private fun runNcmTx() {
+        boostCurrentThread("ncm-lwip-tx")
         try {
             while (running.get()) {
                 val frame = txQueue.poll(TX_POLL_MILLIS, TimeUnit.MILLISECONDS) ?: continue
@@ -164,187 +189,13 @@ class LwipNcmBridge(
     }
 
     private fun runNcmRx() {
+        boostCurrentThread("ncm-lwip-rx")
         try {
             while (running.get()) {
-                val frame = ncm.recv(READ_TIMEOUT_MILLIS)
-                if (frame == null) {
-                    if (peerMac == null) {
-                        sendUnsolicitedNeighborAdvertisement()
-                    }
-                    continue
-                }
-
-                val ipv6 = EthernetIpv6Codec.parseIpv6View(frame) ?: continue
-                peerMac = ipv6.sourceMac
-
-                val ns = EthernetIpv6Codec.parseNeighborSolicitation(frame, ipv6.payloadOffset, ipv6.payloadLength)
-                if (ns != null) {
-                    val isDad = ns.sourceIp.all { it == 0.toByte() }
-                    val isHostAddress = ns.targetIp.contentEquals(hostLinkLocalBytes) ||
-                        ns.targetIp.contentEquals(fe80_1_Bytes)
-                    val isLinkLocal = (ns.targetIp[0].toInt() and 0xff) == 0xfe &&
-                        (ns.targetIp[1].toInt() and 0xc0) == 0x80
-                    val shouldAnswer = if (isDad) {
-                        isHostAddress
-                    } else {
-                        isHostAddress || (isLinkLocal && !ns.targetIp.contentEquals(ns.sourceIp))
-                    }
-
-                    if (shouldAnswer) {
-                        val replyDstMac = if (isDad) allNodesMac else (ns.sourceMac ?: ipv6.sourceMac)
-                        val replyDstIp = if (isDad) allNodesIpv6 else ns.sourceIp
-                        val naFrame = EthernetIpv6Codec.buildNeighborAdvertisement(
-                            hostMac = hostMac,
-                            peerMac = replyDstMac,
-                            hostIpv6 = ns.targetIp,
-                            peerIpv6 = replyDstIp,
-                            solicited = !isDad,
-                        )
-                        enqueueTxFrame(naFrame, tag = "na-reply")
-                        val targetStr = runCatching { InetAddress.getByAddress(ns.targetIp).hostAddress }.getOrDefault("unknown")
-                        val peerStr = runCatching { InetAddress.getByAddress(replyDstIp).hostAddress }.getOrDefault("unknown")
-                        val naMsg = "ncm replied ${if (isDad) "unsolicited" else "solicited"} NA for $targetStr to $peerStr (${replyDstMac.macString()})"
-                        Log.i(TAG, naMsg)
-                        runCatching { onDebugLog(naMsg) }
-                        continue
-                    } else {
-                        val targetStr = runCatching { InetAddress.getByAddress(ns.targetIp).hostAddress }.getOrDefault("unknown")
-                        Log.d(TAG, "ncm ignoring DAD NS for peer candidate $targetStr")
-                    }
-                }
-
-                val responder = mdnsResponder
-                if (responder != null) mdnsAnswerCalls.incrementAndGet()
-                val mdnsAnswers = responder?.answerFrames(
-                    frame, ipv6.payloadOffset, ipv6.payloadLength, hostMac, ipv6.sourceMac,
-                ) ?: emptyList()
-                if (mdnsAnswers.isNotEmpty()) {
-                    mdnsAnsweredQueries.incrementAndGet()
-                    var enqueued = 0
-                    for (mdnsAnswer in mdnsAnswers) {
-                        if (enqueueTxFrame(mdnsAnswer, tag = "mdns")) {
-                            mdnsTxSent.incrementAndGet()
-                            enqueued++
-                        } else {
-                            mdnsTxDropped.incrementAndGet()
-                        }
-                    }
-                    if (enqueued < mdnsAnswers.size) {
-                        // Do not claim "answered" when the answer never reached the TX queue
-                        // (#262): the drop is the diagnosis, not a success.
-                        runCatching {
-                            onDebugLog(
-                                "ncm mdns answer TX dropped enqueued=$enqueued of=${mdnsAnswers.size} " +
-                                    mdnsDiagSummary(),
-                            )
-                        }
-                    }
-                    if (mdnsAnswerLogBudget > 0) {
-                        mdnsAnswerLogBudget--
-                        val answerMsg = "WIRED-CHAIN [15/16] mDNS _airplay query answered frames=${mdnsAnswers.size} " +
-                            "bytes=${mdnsAnswers.sumOf { it.size }} enqueued=$enqueued"
-                        Log.i(TAG, answerMsg)
-                        runCatching { onDebugLog(answerMsg) }
-                    }
-                    maybeLogMdnsDiag()
-                    sendRouterAdvertisement(targetMac = ipv6.sourceMac)
-                    sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
-                    continue
-                }
-
-                if (responder != null) {
-                    val queryName = responder.unmatchedQueryName(frame, ipv6.payloadOffset, ipv6.payloadLength)
-                    if (queryName != null) {
-                        mdnsUnmatchedQueries.incrementAndGet()
-                        lastUnmatchedName = queryName
-                        if (unmatchedMdnsLogBudget > 0) {
-                            unmatchedMdnsLogBudget--
-                            runCatching { onDebugLog("ncm wired mdns query not answered name=$queryName") }
-                        }
-                        maybeLogMdnsDiag()
-                    }
-                }
-
-                if (!loggedInbound) {
-                    loggedInbound = true
-                    val inMsg = "ncm first inbound ipv6 bytes=${ipv6.payloadLength} peer=${ipv6.sourceMac.macString()}"
-                    Log.i(TAG, inMsg)
-                    runCatching { onDebugLog(inMsg) }
-                    sendRouterAdvertisement(targetMac = ipv6.sourceMac)
-                    sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
-                }
-
-                if (inboundLogBudget > 0) {
-                    inboundLogBudget--
-                    Log.i(TAG, "ncm inbound ${frame.summary(ipv6.payloadOffset)}")
-                }
-
-                val inboundNextHeader =
-                    if (ipv6.payloadLength >= 40) (frame[ipv6.payloadOffset + 6].toInt() and 0xff) else -1
-                if (inboundNextHeader == 6 && reportTcpBudget > 0) {
-                    reportTcpBudget--
-                    runCatching { onDebugLog("ncm inbound diag ${frame.diagnosticSummary(ipv6.payloadOffset)}") }
-                } else if (reportInboundBudget > 0) {
-                    reportInboundBudget--
-                    runCatching { onDebugLog("ncm inbound diag ${frame.diagnosticSummary(ipv6.payloadOffset)}") }
-                }
-
-                if (inboundNextHeader == 58 && ipv6.payloadLength >= 48) {
-                    val icmpType = frame[ipv6.payloadOffset + 40].toInt() and 0xff
-                    if (icmpType == 133) {
-                        Log.i(TAG, "ncm inbound Router Solicitation from iPhone; sending RA and NA")
-                        runCatching { onDebugLog("ncm inbound RS from peer ${ipv6.sourceMac.macString()}; sending RA") }
-                        val peerSrcIp = frame.copyOfRange(ipv6.payloadOffset + 8, ipv6.payloadOffset + 24)
-                        sendRouterAdvertisement(targetMac = ipv6.sourceMac, targetIp = peerSrcIp)
-                        sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
-                    }
-                }
-
-                val isTcp = inboundNextHeader == 6
-                if (isTcp) {
-                    val tcpCount = injectedTcpPackets.incrementAndGet()
-                    if (tcpCount == 1) {
-                        val tcpMsg = "WIRED-CHAIN [16/16] first TCP packet passed to lwIP (iPhone -> 7000)"
-                        Log.i(TAG, tcpMsg)
-                        runCatching { onDebugLog(tcpMsg) }
-                    }
-                    // Issue #270: after a session ends, the iPhone keeps sending TCP to the
-                    // previous session's video dataPort during the next attempt. Those packets
-                    // have no listener now; count them so a failing reconnect log shows whether
-                    // stale-session traffic is drowning the new attempt's SYN to 7000.
-                    if (ipv6.payloadLength >= 44 && registeredTcpPorts.isNotEmpty()) {
-                        val dstPort = ((frame[ipv6.payloadOffset + 42].toInt() and 0xff) shl 8) or
-                            (frame[ipv6.payloadOffset + 43].toInt() and 0xff)
-                        if (dstPort !in registeredTcpPorts) {
-                            val stale = stalePortTcpPackets.incrementAndGet()
-                            if (stalePortLogBudget > 0) {
-                                stalePortLogBudget--
-                                runCatching {
-                                    onDebugLog("ncm stale-session tcp dstPort=$dstPort count=$stale (no listener this session)")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                lwipNative.inputFrame(frame)
-
-                if (isTcp && lwipInjectLogBudget > 0) {
-                    lwipInjectLogBudget--
-                    val dstPort = if (ipv6.payloadLength >= 44) {
-                        ((frame[ipv6.payloadOffset + 42].toInt() and 0xff) shl 8) or
-                            (frame[ipv6.payloadOffset + 43].toInt() and 0xff)
-                    } else -1
-                    val flags = if (ipv6.payloadLength >= 54) frame[ipv6.payloadOffset + 40 + 13].toInt() and 0xff else 0
-                    val isSyn = (flags and 0x02) != 0
-                    val dstLocal = ipv6.payloadLength >= 40 &&
-                        (frame.copyOfRange(ipv6.payloadOffset + 24, ipv6.payloadOffset + 40).contentEquals(hostLinkLocalBytes) ||
-                         frame.copyOfRange(ipv6.payloadOffset + 24, ipv6.payloadOffset + 40).contentEquals(fe80_1_Bytes))
-                    runCatching {
-                        onDebugLog(
-                            "ncm lwip inject tcp bytes=${ipv6.payloadLength} dstPort=$dstPort${if (isSyn) " [SYN]" else ""} dstLocal=$dstLocal ok",
-                        )
-                    }
+                val delivered = ncm.recvInto(READ_TIMEOUT_MILLIS, rxSink)
+                maybeLogPerf()
+                if (delivered == 0 && peerMac == null) {
+                    sendUnsolicitedNeighborAdvertisement()
                 }
             }
         } catch (error: IOException) {
@@ -354,7 +205,321 @@ class LwipNcmBridge(
         }
     }
 
+    /**
+     * Steady-state TCP and non-mDNS UDP frames from the known peer go straight from the NCM
+     * receive buffer into lwIP: no Java array, no IPv6 view object, no logging. Everything else
+     * (neighbor discovery, mDNS, the first frames that feed the budgeted diagnostics, stale-port
+     * TCP) takes the original path on a private copy.
+     */
+    private fun onInboundFrame(buffer: ByteArray, offset: Int, length: Int) {
+        if (injectFastPath(buffer, offset, length)) {
+            perfFastFrames++
+            return
+        }
+        perfSlowFrames++
+        handleInboundFrame(buffer.copyOfRange(offset, offset + length))
+    }
+
+    private fun injectFastPath(buffer: ByteArray, offset: Int, length: Int): Boolean {
+        if (!loggedInbound || inboundLogBudget > 0 || reportInboundBudget > 0 ||
+            reportTcpBudget > 0 || lwipInjectLogBudget > 0
+        ) return false
+        if (length < ETHERNET_HEADER_BYTES + IPV6_HEADER_BYTES + UDP_HEADER_BYTES) return false
+        if (buffer[offset + 12] != 0x86.toByte() || buffer[offset + 13] != 0xdd.toByte()) return false
+        val ip = offset + ETHERNET_HEADER_BYTES
+        if ((buffer[ip].toInt() ushr 4) and 0x0f != 6) return false
+        val payloadLength = ((buffer[ip + 4].toInt() and 0xff) shl 8) or (buffer[ip + 5].toInt() and 0xff)
+        if (ETHERNET_HEADER_BYTES + IPV6_HEADER_BYTES + payloadLength > length) return false
+        val known = peerMac ?: return false
+        for (index in 0 until EthernetIpv6Codec.MAC_BYTES) {
+            if (buffer[offset + 6 + index] != known[index]) return false
+        }
+        val l4 = ip + IPV6_HEADER_BYTES
+        val dstPort = ((buffer[l4 + 2].toInt() and 0xff) shl 8) or (buffer[l4 + 3].toInt() and 0xff)
+        when (buffer[ip + 6].toInt() and 0xff) {
+            TCP_NEXT_HEADER -> {
+                if (payloadLength < TCP_HEADER_BYTES || injectedTcpPackets.get() == 0) return false
+                if (!isRegisteredTcpPort(dstPort)) return false
+                injectedTcpPackets.incrementAndGet()
+            }
+            UDP_NEXT_HEADER -> if (dstPort == MDNS_PORT) return false
+            else -> return false
+        }
+        if (mdnsResponder != null) mdnsAnswerCalls.incrementAndGet()
+        lwipNative.inputFrame(buffer, offset, length)
+        return true
+    }
+
+    private fun isRegisteredTcpPort(port: Int): Boolean {
+        for (candidate in registeredTcpPortArray) if (candidate == port) return true
+        return false
+    }
+
+    /** The original per-frame path; runs on a private copy of the frame. */
+    private fun handleInboundFrame(frame: ByteArray) {
+        val ipv6 = EthernetIpv6Codec.parseIpv6View(frame) ?: return
+        peerMac = ipv6.sourceMac
+
+        val ns = EthernetIpv6Codec.parseNeighborSolicitation(frame, ipv6.payloadOffset, ipv6.payloadLength)
+        if (ns != null) {
+            val isDad = ns.sourceIp.all { it == 0.toByte() }
+            val isHostAddress = ns.targetIp.contentEquals(hostLinkLocalBytes) ||
+                ns.targetIp.contentEquals(fe80_1_Bytes)
+            val isLinkLocal = (ns.targetIp[0].toInt() and 0xff) == 0xfe &&
+                (ns.targetIp[1].toInt() and 0xc0) == 0x80
+            val shouldAnswer = if (isDad) {
+                isHostAddress
+            } else {
+                isHostAddress || (isLinkLocal && !ns.targetIp.contentEquals(ns.sourceIp))
+            }
+
+            if (shouldAnswer) {
+                val replyDstMac = if (isDad) allNodesMac else (ns.sourceMac ?: ipv6.sourceMac)
+                val replyDstIp = if (isDad) allNodesIpv6 else ns.sourceIp
+                val naFrame = EthernetIpv6Codec.buildNeighborAdvertisement(
+                    hostMac = hostMac,
+                    peerMac = replyDstMac,
+                    hostIpv6 = ns.targetIp,
+                    peerIpv6 = replyDstIp,
+                    solicited = !isDad,
+                )
+                enqueueTxFrame(naFrame, tag = "na-reply")
+                val targetStr = runCatching { InetAddress.getByAddress(ns.targetIp).hostAddress }.getOrDefault("unknown")
+                val peerStr = runCatching { InetAddress.getByAddress(replyDstIp).hostAddress }.getOrDefault("unknown")
+                val naMsg = "ncm replied ${if (isDad) "unsolicited" else "solicited"} NA for $targetStr to $peerStr (${replyDstMac.macString()})"
+                Log.i(TAG, naMsg)
+                runCatching { onDebugLog(naMsg) }
+                return
+            } else {
+                val targetStr = runCatching { InetAddress.getByAddress(ns.targetIp).hostAddress }.getOrDefault("unknown")
+                Log.d(TAG, "ncm ignoring DAD NS for peer candidate $targetStr")
+            }
+        }
+
+        val responder = mdnsResponder
+        if (responder != null) mdnsAnswerCalls.incrementAndGet()
+        val mdnsAnswers = responder?.answerFrames(
+            frame, ipv6.payloadOffset, ipv6.payloadLength, hostMac, ipv6.sourceMac,
+        ) ?: emptyList()
+        if (mdnsAnswers.isNotEmpty()) {
+            mdnsAnsweredQueries.incrementAndGet()
+            var enqueued = 0
+            for (mdnsAnswer in mdnsAnswers) {
+                if (enqueueTxFrame(mdnsAnswer, tag = "mdns")) {
+                    mdnsTxSent.incrementAndGet()
+                    enqueued++
+                } else {
+                    mdnsTxDropped.incrementAndGet()
+                }
+            }
+            if (enqueued < mdnsAnswers.size) {
+                // Do not claim "answered" when the answer never reached the TX queue
+                // (#262): the drop is the diagnosis, not a success.
+                runCatching {
+                    onDebugLog(
+                        "ncm mdns answer TX dropped enqueued=$enqueued of=${mdnsAnswers.size} " +
+                            mdnsDiagSummary(),
+                    )
+                }
+            }
+            if (mdnsAnswerLogBudget > 0) {
+                mdnsAnswerLogBudget--
+                val answerMsg = "WIRED-CHAIN [15/16] mDNS _airplay query answered frames=${mdnsAnswers.size} " +
+                    "bytes=${mdnsAnswers.sumOf { it.size }} enqueued=$enqueued"
+                Log.i(TAG, answerMsg)
+                runCatching { onDebugLog(answerMsg) }
+            }
+            maybeLogMdnsDiag()
+            sendRouterAdvertisement(targetMac = ipv6.sourceMac)
+            sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
+            return
+        }
+
+        if (responder != null) {
+            val queryName = responder.unmatchedQueryName(frame, ipv6.payloadOffset, ipv6.payloadLength)
+            if (queryName != null) {
+                mdnsUnmatchedQueries.incrementAndGet()
+                lastUnmatchedName = queryName
+                if (unmatchedMdnsLogBudget > 0) {
+                    unmatchedMdnsLogBudget--
+                    runCatching { onDebugLog("ncm wired mdns query not answered name=$queryName") }
+                }
+                maybeLogMdnsDiag()
+            }
+        }
+
+        if (!loggedInbound) {
+            loggedInbound = true
+            val inMsg = "ncm first inbound ipv6 bytes=${ipv6.payloadLength} peer=${ipv6.sourceMac.macString()}"
+            Log.i(TAG, inMsg)
+            runCatching { onDebugLog(inMsg) }
+            sendRouterAdvertisement(targetMac = ipv6.sourceMac)
+            sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
+        }
+
+        if (inboundLogBudget > 0) {
+            inboundLogBudget--
+            Log.i(TAG, "ncm inbound ${frame.summary(ipv6.payloadOffset)}")
+        }
+
+        val inboundNextHeader =
+            if (ipv6.payloadLength >= 40) (frame[ipv6.payloadOffset + 6].toInt() and 0xff) else -1
+        if (inboundNextHeader == 6 && reportTcpBudget > 0) {
+            reportTcpBudget--
+            runCatching { onDebugLog("ncm inbound diag ${frame.diagnosticSummary(ipv6.payloadOffset)}") }
+        } else if (reportInboundBudget > 0) {
+            reportInboundBudget--
+            runCatching { onDebugLog("ncm inbound diag ${frame.diagnosticSummary(ipv6.payloadOffset)}") }
+        }
+
+        if (inboundNextHeader == 58 && ipv6.payloadLength >= 48) {
+            val icmpType = frame[ipv6.payloadOffset + 40].toInt() and 0xff
+            if (icmpType == 133) {
+                Log.i(TAG, "ncm inbound Router Solicitation from iPhone; sending RA and NA")
+                runCatching { onDebugLog("ncm inbound RS from peer ${ipv6.sourceMac.macString()}; sending RA") }
+                val peerSrcIp = frame.copyOfRange(ipv6.payloadOffset + 8, ipv6.payloadOffset + 24)
+                sendRouterAdvertisement(targetMac = ipv6.sourceMac, targetIp = peerSrcIp)
+                sendUnsolicitedNeighborAdvertisement(force = true, targetMac = ipv6.sourceMac)
+            }
+        }
+
+        val isTcp = inboundNextHeader == 6
+        if (isTcp) {
+            val tcpCount = injectedTcpPackets.incrementAndGet()
+            if (tcpCount == 1) {
+                val tcpMsg = "WIRED-CHAIN [16/16] first TCP packet passed to lwIP (iPhone -> 7000)"
+                Log.i(TAG, tcpMsg)
+                runCatching { onDebugLog(tcpMsg) }
+            }
+            // Issue #270: after a session ends, the iPhone keeps sending TCP to the
+            // previous session's video dataPort during the next attempt. Those packets
+            // have no listener now; count them so a failing reconnect log shows whether
+            // stale-session traffic is drowning the new attempt's SYN to 7000.
+            if (ipv6.payloadLength >= 44 && registeredTcpPorts.isNotEmpty()) {
+                val dstPort = ((frame[ipv6.payloadOffset + 42].toInt() and 0xff) shl 8) or
+                    (frame[ipv6.payloadOffset + 43].toInt() and 0xff)
+                if (dstPort !in registeredTcpPorts) {
+                    val stale = stalePortTcpPackets.incrementAndGet()
+                    if (stalePortLogBudget > 0) {
+                        stalePortLogBudget--
+                        runCatching {
+                            onDebugLog("ncm stale-session tcp dstPort=$dstPort count=$stale (no listener this session)")
+                        }
+                    }
+                }
+            }
+        }
+
+        lwipNative.inputFrame(frame)
+
+        if (isTcp && lwipInjectLogBudget > 0) {
+            lwipInjectLogBudget--
+            val dstPort = if (ipv6.payloadLength >= 44) {
+                ((frame[ipv6.payloadOffset + 42].toInt() and 0xff) shl 8) or
+                    (frame[ipv6.payloadOffset + 43].toInt() and 0xff)
+            } else -1
+            val flags = if (ipv6.payloadLength >= 54) frame[ipv6.payloadOffset + 40 + 13].toInt() and 0xff else 0
+            val isSyn = (flags and 0x02) != 0
+            val dstLocal = ipv6.payloadLength >= 40 &&
+                (frame.copyOfRange(ipv6.payloadOffset + 24, ipv6.payloadOffset + 40).contentEquals(hostLinkLocalBytes) ||
+                 frame.copyOfRange(ipv6.payloadOffset + 24, ipv6.payloadOffset + 40).contentEquals(fe80_1_Bytes))
+            runCatching {
+                onDebugLog(
+                    "ncm lwip inject tcp bytes=${ipv6.payloadLength} dstPort=$dstPort${if (isSyn) " [SYN]" else ""} dstLocal=$dstLocal ok",
+                )
+            }
+        }
+    }
+
     fun tcpSnapshot(): String = lwipNative.getSnapshot()
+
+    /**
+     * Every [PERF_LOG_INTERVAL_NANOS] while traffic flows, writes one NCM_PERF line to the report:
+     * where time goes on the USB read side, the frame path, the USB write side and inside lwIP.
+     *
+     * rx: urbs/kbps = bulk IN completions and payload rate; waitMs = time blocked on USB;
+     *     ready = completions already done when awaited (reader behind the phone);
+     *     inflight = average reads queued while waiting; busy = share of the window spent
+     *     parsing frames and pushing them through lwIP.
+     * tx: avg/max = one synchronous bulk OUT; busy = share of the window inside bulk OUT;
+     *     queueMax/dropped = TX queue high-water mark and frames lost when it was full.
+     * lwip: errMem must stay 0; maxChain = largest reassembled chunk handed to the relay;
+     *     relayPeak = most bytes waiting for the app; eagain = app reader behind;
+     *     refused/ooseq/minWnd = PCB state when sampled.
+     */
+    private fun maybeLogPerf() {
+        val now = System.nanoTime()
+        if (now - lastPerfLogNs < PERF_LOG_INTERVAL_NANOS) return
+        lastPerfLogNs = now
+        val window = ncm.takePerfWindow()
+        val fast = perfFastFrames
+        val slow = perfSlowFrames
+        perfFastFrames = 0
+        perfSlowFrames = 0
+        val queueMax = txQueueMaxDepth.getAndSet(0)
+        val dropped = droppedTxWindow.getAndSet(0)
+        val haveNative = lwipNative.readPerfCounters(perfNative)
+        if (window.readCompletions == 0L && window.writeCalls == 0L) return
+        val ms = window.windowMillis.coerceAtLeast(1)
+        fun pct(part: Long) = part * 100 / ms
+        fun kbps(bytes: Long) = bytes * 8 / ms
+        val line = buildString {
+            append("NCM_PERF windowMs=").append(ms)
+            append(" rx: urbs=").append(window.readCompletions)
+            append(" kbps=").append(kbps(window.readBytes))
+            append(" waitMs=").append(window.readWaitMillis)
+            append(" ready=").append(window.readReadyOnAwait).append('/').append(window.readCompletions)
+            append(" inflight=").append(String.format(java.util.Locale.US, "%.1f", window.readInFlightAvg))
+            append('/').append(window.requestsConfigured)
+            if (window.concurrentReadsDisabled) append("(single)")
+            append(" frames=").append(window.framesDelivered)
+            append(" fast=").append(fast).append(" slow=").append(slow)
+            append(" busy=").append(pct(window.deliverMillis)).append('%')
+            append(" deliverMaxUs=").append(window.deliverMaxMicros)
+            append(" | tx: calls=").append(window.writeCalls)
+            append(" kbps=").append(kbps(window.writeBytes))
+            append(" avgUs=").append(window.writeAvgMicros)
+            append(" maxUs=").append(window.writeMaxMicros)
+            append(" busy=").append(pct(window.writeMillis)).append('%')
+            append(" queueMax=").append(queueMax).append('/').append(TX_QUEUE_CAPACITY)
+            append(" dropped=").append(dropped).append(" droppedTotal=").append(droppedTxFrames.get())
+            if (haveNative) {
+                append(" | lwip: rx=").append(perfNative[LwipNcmNative.PERF_RX_FRAMES])
+                append(" drops=").append(perfNative[LwipNcmNative.PERF_RX_DROPS])
+                append(" pbufFail=").append(perfNative[LwipNcmNative.PERF_PBUF_ALLOC_FAILS])
+                append(" tx=").append(perfNative[LwipNcmNative.PERF_TX_FRAMES])
+                append(" errMem=").append(perfNative[LwipNcmNative.PERF_RECV_ERR_MEM])
+                append(" maxChain=").append(perfNative[LwipNcmNative.PERF_RECV_MAX_CHAIN])
+                append(" relayPeak=").append(perfNative[LwipNcmNative.PERF_RELAY_PEAK_BYTES])
+                append(" eagain=").append(perfNative[LwipNcmNative.PERF_LOOPBACK_EAGAIN])
+                append(" refused=").append(perfNative[LwipNcmNative.PERF_TCP_REFUSED_PCBS])
+                append(" ooseq=").append(perfNative[LwipNcmNative.PERF_TCP_OOSEQ_PCBS])
+                append(" minWnd=").append(perfNative[LwipNcmNative.PERF_TCP_MIN_RCV_WND])
+            } else {
+                append(" | lwip: unavailable")
+            }
+        }
+        Log.i(TAG, line)
+        runCatching { onDebugLog(line) }
+    }
+
+    /**
+     * DiPlay is platform-signed on these head units, so the data-path threads can run at audio
+     * priority. Without it the UI thread and GC preempt the reader and the phone's bulk IN backs
+     * up. Best effort: an unprivileged build keeps its default priority and says so once.
+     */
+    private fun boostCurrentThread(name: String) {
+        val result = runCatching {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            Process.getThreadPriority(Process.myTid())
+        }
+        val line = result.fold(
+            onSuccess = { "ncm thread $name priority=$it" },
+            onFailure = { "ncm thread $name priority boost failed: ${it.javaClass.simpleName}: ${it.message}" },
+        )
+        Log.i(TAG, line)
+        runCatching { onDebugLog(line) }
+    }
 
     fun sendRouterAdvertisement(targetMac: ByteArray? = null, targetIp: ByteArray? = null) {
         if (!running.get()) return
@@ -469,6 +634,14 @@ class LwipNcmBridge(
         const val NA_RETRY_INTERVAL_NANOS = 500_000_000L
         const val TX_QUEUE_CAPACITY = 64
         const val TX_POLL_MILLIS = 200L
+        const val PERF_LOG_INTERVAL_NANOS = 5_000_000_000L
+        const val ETHERNET_HEADER_BYTES = 14
+        const val IPV6_HEADER_BYTES = 40
+        const val UDP_HEADER_BYTES = 8
+        const val TCP_HEADER_BYTES = 20
+        const val TCP_NEXT_HEADER = 6
+        const val UDP_NEXT_HEADER = 17
+        const val MDNS_PORT = 5353
         /** Emit the mDNS diagnostic summary after every N answered/unmatched queries (#262). */
         const val MDNS_DIAG_LOG_EVERY = 5
     }

@@ -35,6 +35,30 @@ class LwipNcmNative(
         }
     }
 
+    /** Injects [length] bytes at [offset] without copying them into a new Java array first. */
+    @Synchronized
+    fun inputFrame(buffer: ByteArray, offset: Int, length: Int) {
+        val handle = nativeHandle
+        if (handle != 0L) {
+            nativeInputFrameRange(handle, buffer, offset, length)
+        }
+    }
+
+    /**
+     * Reads the native performance counters into [out] (indexes are [PERF_RX_FRAMES] and
+     * friends) and restarts the per-window totals. Returns false when the stack is gone.
+     */
+    @Synchronized
+    fun readPerfCounters(out: LongArray): Boolean {
+        val handle = nativeHandle
+        if (handle == 0L) return false
+        return try {
+            nativeGetPerfCounters(handle, out) > 0
+        } catch (_: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
     @Synchronized
     fun registerPort(port: Int, isTcp: Boolean) {
         val handle = nativeHandle
@@ -70,7 +94,25 @@ class LwipNcmNative(
 
     private external fun nativeCreate(hostMac: ByteArray, linkLocal: String): Long
     private external fun nativeInputFrame(handle: Long, frame: ByteArray, length: Int)
+    private external fun nativeInputFrameRange(handle: Long, frame: ByteArray, offset: Int, length: Int)
+    private external fun nativeGetPerfCounters(handle: Long, out: LongArray): Int
     private external fun nativeRegisterPort(handle: Long, port: Int, isTcp: Boolean)
     private external fun nativeGetSnapshot(handle: Long): String
     private external fun nativeDestroy(handle: Long)
+
+    companion object {
+        // Must match the PERF_* enum in lwip_ncm_relay.c.
+        const val PERF_RX_FRAMES = 0
+        const val PERF_RX_DROPS = 1
+        const val PERF_PBUF_ALLOC_FAILS = 2
+        const val PERF_TX_FRAMES = 3
+        const val PERF_RECV_ERR_MEM = 4
+        const val PERF_RECV_MAX_CHAIN = 5
+        const val PERF_RELAY_PEAK_BYTES = 6
+        const val PERF_LOOPBACK_EAGAIN = 7
+        const val PERF_TCP_REFUSED_PCBS = 8
+        const val PERF_TCP_MIN_RCV_WND = 9
+        const val PERF_TCP_OOSEQ_PCBS = 10
+        const val PERF_COUNT = 11
+    }
 }

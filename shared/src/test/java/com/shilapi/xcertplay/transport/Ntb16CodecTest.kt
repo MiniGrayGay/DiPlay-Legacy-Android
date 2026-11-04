@@ -29,4 +29,14 @@ class Ntb16CodecTest {
     fun datagramThatWouldOverflowBlockLengthIsRejected() {
         Ntb16Codec.build(ByteArray(65_508), 0x1234)
     }
+
+    @Test
+    fun forEachDatagramPointsIntoTheSourceBuffer() {
+        val frame = ByteArray(300) { (it * 7).toByte() }
+        val stream = byteArrayOf(1, 2, 3) + Ntb16Codec.build(frame, 4)
+        val seen = ArrayList<Pair<Int, Int>>()
+        Ntb16Codec.forEachDatagram(stream, 3, stream.size - 3) { offset, length -> seen += offset to length }
+        org.junit.Assert.assertEquals(listOf((3 + 28) to frame.size), seen)
+        org.junit.Assert.assertArrayEquals(frame, stream.copyOfRange(seen[0].first, seen[0].first + seen[0].second))
+    }
 }

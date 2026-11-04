@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/resource.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -39,14 +40,27 @@
 #define LWIP_TO_LOOPBACK_BUFFER_SIZE (64 * 1024)
 #define LOOPBACK_SOCKET_BUFFER_SIZE (256 * 1024)
 
+/* lwIP hands tcp_relay_recv a whole reassembled out-of-order chain (up to the
+ * receive window) at once, and the window only reopens after tcp_recved. A
+ * buffer smaller than TCP_WND can therefore refuse a chain forever: lwIP keeps
+ * it as refused_data and drops every later data segment, and the connection
+ * stalls while small UDP traffic still flows. */
+_Static_assert(LWIP_TO_LOOPBACK_BUFFER_SIZE >= TCP_WND,
+               "the phone-to-app relay buffer must cover the whole receive window");
+/* The relay credits at most one window per send() through tcp_recved(u16_t). */
+_Static_assert(TCP_WND <= 0xffff, "tcp_recved credit must fit in u16_t");
+
 // NO_SYS lwIP owns process-global heaps, PCB lists and cyclic timers.
 // Reinitializing those globals for another USB session corrupts next_timeout.
 static pthread_once_t lwip_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t lwip_core_lock = PTHREAD_MUTEX_INITIALIZER;
 static void initialize_lwip_once(void) { lwip_init(); }
 
+struct LwipContext;
+
 typedef struct {
     int active;
+    struct LwipContext *ctx;
     struct tcp_pcb *lwip_pcb;
     int loopback_fd;
     uint8_t loopback_to_lwip_buf[LOOPBACK_TO_LWIP_BUFFER_SIZE];
@@ -73,7 +87,24 @@ typedef struct {
 
 #define MAX_PORT_MAPPINGS 32
 
-typedef struct {
+/* Performance counters, read and reset by nativeGetPerfCounters. Indexes are
+ * shared with LwipNcmNative.PERF_* in Kotlin. Updated under lwip_core_lock. */
+enum {
+    PERF_RX_FRAMES = 0,       /* frames injected from USB */
+    PERF_RX_DROPS,            /* netif input rejected the frame */
+    PERF_PBUF_ALLOC_FAILS,    /* no heap for an inbound frame */
+    PERF_TX_FRAMES,           /* frames lwIP handed to the USB TX queue */
+    PERF_RECV_ERR_MEM,        /* tcp_relay_recv refused data (should stay 0) */
+    PERF_RECV_MAX_CHAIN,      /* largest chain passed to tcp_relay_recv */
+    PERF_RELAY_PEAK_BYTES,    /* peak phone-to-app bytes waiting for loopback */
+    PERF_LOOPBACK_EAGAIN,     /* loopback send would block (app reader is behind) */
+    PERF_TCP_REFUSED_PCBS,    /* PCBs holding refused_data at snapshot time */
+    PERF_TCP_MIN_RCV_WND,     /* smallest receive window at snapshot time */
+    PERF_TCP_OOSEQ_PCBS,      /* PCBs holding out-of-order segments at snapshot time */
+    PERF_COUNT
+};
+
+typedef struct LwipContext {
     JavaVM *jvm;
     jobject bridge_obj_global;
     jmethodID on_tx_frame_mid;
@@ -106,6 +137,8 @@ typedef struct {
     uint32_t stats_tx_bytes;
     uint32_t stats_tcp_conns_accepted;
     uint32_t stats_tcp_conns_closed;
+
+    uint64_t perf[PERF_COUNT];
 } LwipContext;
 
 static err_t ncm_netif_output_ip6(struct netif *netif, struct pbuf *p, const ip6_addr_t *ip6addr) {
@@ -121,6 +154,7 @@ static err_t ncm_linkoutput(struct netif *netif, struct pbuf *p) {
 
     ctx->stats_tx_frames++;
     ctx->stats_tx_bytes += (uint32_t)total_len;
+    ctx->perf[PERF_TX_FRAMES]++;
 
     JNIEnv *env = NULL;
     int attached = 0;
@@ -323,10 +357,20 @@ static err_t tcp_relay_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
 
     // Never wait for a slow local reader while holding the global NO_SYS core
     // lock. Keep bounded data and let the worker forward it nonblockingly.
-    if (p->tot_len > LWIP_TO_LOOPBACK_BUFFER_SIZE - conn->lwip_to_loopback_len) return ERR_MEM;
+    LwipContext *ctx = conn->ctx;
+    if (ctx != NULL && p->tot_len > ctx->perf[PERF_RECV_MAX_CHAIN]) {
+        ctx->perf[PERF_RECV_MAX_CHAIN] = p->tot_len;
+    }
+    if (p->tot_len > LWIP_TO_LOOPBACK_BUFFER_SIZE - conn->lwip_to_loopback_len) {
+        if (ctx != NULL) ctx->perf[PERF_RECV_ERR_MEM]++;
+        return ERR_MEM;
+    }
     u16_t accepted = (u16_t)p->tot_len;
     pbuf_copy_partial(p, conn->lwip_to_loopback_buf + conn->lwip_to_loopback_len, accepted, 0);
     conn->lwip_to_loopback_len += accepted;
+    if (ctx != NULL && (uint64_t)conn->lwip_to_loopback_len > ctx->perf[PERF_RELAY_PEAK_BYTES]) {
+        ctx->perf[PERF_RELAY_PEAK_BYTES] = (uint64_t)conn->lwip_to_loopback_len;
+    }
     pbuf_free(p);
     // ACK this segment immediately. lwIP otherwise delays the odd segment
     // (the tail of a ~7-segment video frame) until the 250 ms TCP timer, and
@@ -386,6 +430,7 @@ static err_t tcp_relay_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
     conn->active = 1;
+    conn->ctx = ctx;
     conn->lwip_pcb = newpcb;
     conn->loopback_fd = fd;
     conn->loopback_to_lwip_len = 0;
@@ -417,6 +462,7 @@ static void check_and_forward_loopback(LwipContext *ctx) {
             } else if (sent < 0 && errno == EINTR) {
                 continue;
             } else if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                ctx->perf[PERF_LOOPBACK_EAGAIN]++;
                 break;
             } else {
                 close_tcp_relay_conn(ctx, conn);
@@ -587,7 +633,12 @@ static void register_listeners_locked(LwipContext *ctx) {
 
 static void *lwip_worker_thread(void *arg) {
     LwipContext *ctx = (LwipContext *)arg;
-    LOGI("lwIP worker thread started");
+    // Audio priority (nice -16), like the Java NCM threads. Platform-signed
+    // builds are allowed to; others keep the default and log why.
+    if (setpriority(PRIO_PROCESS, 0, -16) != 0) {
+        LOGW("lwIP worker priority boost failed errno=%d", errno);
+    }
+    LOGI("lwIP worker thread started nice=%d", getpriority(PRIO_PROCESS, 0));
 
     while (ctx->running) {
         pthread_mutex_lock(&lwip_core_lock);
@@ -710,12 +761,9 @@ Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeCreate(
     return (jlong)(intptr_t)ctx;
 }
 
-JNIEXPORT void JNICALL
-Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeInputFrame(
-        JNIEnv *env, jobject thiz, jlong handle, jbyteArray frameArr, jint length) {
-    (void)thiz;
-    LwipContext *ctx = (LwipContext *)(intptr_t)handle;
-    if (ctx == NULL || !ctx->running || frameArr == NULL || length <= 0) return;
+static void input_frame(JNIEnv *env, LwipContext *ctx, jbyteArray frameArr, jint offset, jint length) {
+    if (ctx == NULL || !ctx->running || frameArr == NULL || length <= 0 || offset < 0) return;
+    if (length > 0xffff) return;
 
     // lwIP is built with NO_SYS=1 / SYS_LIGHTWEIGHT_PROT=0: its heap (mem.c)
     // has no internal locking, so every heap access must hold ctx->lock.
@@ -725,15 +773,24 @@ Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeInputFrame(
     pthread_mutex_lock(&lwip_core_lock);
     struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)length, PBUF_RAM);
     if (p == NULL) {
+        ctx->perf[PERF_PBUF_ALLOC_FAILS]++;
         pthread_mutex_unlock(&lwip_core_lock);
         LOGW("pbuf_alloc failed for length %d", length);
         return;
     }
 
-    (*env)->GetByteArrayRegion(env, frameArr, 0, length, (jbyte *)p->payload);
+    // Copies straight out of the caller's NCM receive buffer: no per-frame
+    // Java array is needed for the zero-allocation path.
+    (*env)->GetByteArrayRegion(env, frameArr, offset, length, (jbyte *)p->payload);
+    if ((*env)->ExceptionCheck(env)) {
+        pbuf_free(p);
+        pthread_mutex_unlock(&lwip_core_lock);
+        return;
+    }
 
     ctx->stats_rx_frames++;
     ctx->stats_rx_bytes += (uint32_t)length;
+    ctx->perf[PERF_RX_FRAMES]++;
     if (length >= 14) {
         uint8_t *raw = (uint8_t *)p->payload;
         uint16_t ethertype = (((uint16_t)raw[12]) << 8) | raw[13];
@@ -758,11 +815,65 @@ Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeInputFrame(
     err_t err = ctx->ncm_netif.input(p, &ctx->ncm_netif);
     if (err != ERR_OK) {
         ctx->stats_rx_drops++;
+        ctx->perf[PERF_RX_DROPS]++;
         pbuf_free(p);
     }
     pthread_mutex_unlock(&lwip_core_lock);
 
     trigger_wake(ctx);
+}
+
+JNIEXPORT void JNICALL
+Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeInputFrame(
+        JNIEnv *env, jobject thiz, jlong handle, jbyteArray frameArr, jint length) {
+    (void)thiz;
+    input_frame(env, (LwipContext *)(intptr_t)handle, frameArr, 0, length);
+}
+
+JNIEXPORT void JNICALL
+Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeInputFrameRange(
+        JNIEnv *env, jobject thiz, jlong handle, jbyteArray frameArr, jint offset, jint length) {
+    (void)thiz;
+    input_frame(env, (LwipContext *)(intptr_t)handle, frameArr, offset, length);
+}
+
+/* Copies the counters into out[] and resets the per-window ones. Peaks and
+ * PCB state are sampled now; totals restart at zero after each read. */
+JNIEXPORT jint JNICALL
+Java_com_shilapi_xcertplay_network_LwipNcmNative_nativeGetPerfCounters(
+        JNIEnv *env, jobject thiz, jlong handle, jlongArray out) {
+    (void)thiz;
+    LwipContext *ctx = (LwipContext *)(intptr_t)handle;
+    if (ctx == NULL || out == NULL) return 0;
+    jsize count = (*env)->GetArrayLength(env, out);
+    if (count > PERF_COUNT) count = PERF_COUNT;
+
+    jlong values[PERF_COUNT];
+    pthread_mutex_lock(&lwip_core_lock);
+    uint64_t refused = 0;
+    uint64_t ooseq = 0;
+    uint64_t min_wnd = 0xffffffffu;
+    for (int i = 0; i < MAX_RELAY_CONNS; i++) {
+        TcpRelayConn *conn = &ctx->tcp_conns[i];
+        if (!conn->active || conn->lwip_pcb == NULL) continue;
+        struct tcp_pcb *pcb = conn->lwip_pcb;
+        if (pcb->refused_data != NULL) refused++;
+#if TCP_QUEUE_OOSEQ
+        if (pcb->ooseq != NULL) ooseq++;
+#endif
+        if (pcb->rcv_wnd < min_wnd) min_wnd = pcb->rcv_wnd;
+    }
+    ctx->perf[PERF_TCP_REFUSED_PCBS] = refused;
+    ctx->perf[PERF_TCP_OOSEQ_PCBS] = ooseq;
+    ctx->perf[PERF_TCP_MIN_RCV_WND] = min_wnd == 0xffffffffu ? 0 : min_wnd;
+    for (int i = 0; i < PERF_COUNT; i++) {
+        values[i] = (jlong)ctx->perf[i];
+        ctx->perf[i] = 0;
+    }
+    pthread_mutex_unlock(&lwip_core_lock);
+
+    (*env)->SetLongArrayRegion(env, out, 0, count, values);
+    return count;
 }
 
 JNIEXPORT void JNICALL
