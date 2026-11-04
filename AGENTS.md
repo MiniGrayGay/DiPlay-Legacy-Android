@@ -81,3 +81,19 @@ Each locale MUST use its existing form: `(تجريبي)`, `(experimental)`, `(э
 
 Overview holds the connection status, links to the categories, quick settings, About and Language.
 Do not add a new setting to Overview. Add it to its category. Then promote it to quick settings only if drivers change it often.
+
+## Guangqi head unit (GAEI AVNTG2A10)
+
+This fork targets a Guangqi (GAEI) head unit: Freescale i.MX6 SABRESD, Android 4.4.2 (API 19), kernel 3.0.35.
+
+- The ROM strips the USB and VPN permission activities, so an ordinary app never gets USB access.
+  Every build for this unit MUST be platform-signed AND declare `android:sharedUserId="android.uid.system"` in `mobile/src/main/AndroidManifest.xml`.
+  Platform certificate SHA-256: `7fbae817b7db24642d8959c347b561c003c6cfde2cb10f909c932f21a4d6d804` (`android@freescale.com`).
+  A branch cut from upstream `main` must carry commit `256c41d` ("广汽: 使用平台签名并以 system uid 运行") before it is built for the car.
+- The kernel TUN and the system VPN are unusable on 3.0.35, so wired CarPlay uses the userspace lwIP path (`lwip_ncm_relay.c`).
+- Build car APKs in CI, not locally: `.github/workflows/guangqi-build.yml` takes the platform keystore and the MFi certificate and identity from repository secrets, and uploads the signed release APK as an artifact.
+  Unit test failures do not block that build. Neither the platform key nor the MFi assets are checked into this repository.
+- Changing the app between a normal uid and `android.uid.system` cannot be installed as an update. The installed DiPlay must be uninstalled first, which clears its data.
+- Remote access to the unit goes through the car relay at `https://avnt.xyun.host` (`/status`, `/exec`, `/file`, `/app`).
+  Send `Authorization: Bearer $CAR_OPERATOR_TOKEN` and never commit the token. Do not connect to port 55666 with the device token: a new hello disconnects the car.
+  The unit's toolbox has no `head` or `tail`. DiPlay's log is `/data/data/com.shihab.diplay/files/logs/diplay.log`.
