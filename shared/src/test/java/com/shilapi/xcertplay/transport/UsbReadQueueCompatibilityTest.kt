@@ -38,7 +38,8 @@ class UsbReadQueueCompatibilityTest {
         UsbQueueReplay.reset()
         val ncm = ncm()
         try { assertEquals(payload.size, readChunk(ncm)) } finally { ncm.close() }
-        assertEquals(listOf(16_384), UsbQueueReplay.sizes)
+        // NCM requeues a completed read at once, so the controller keeps reading meanwhile.
+        assertEquals(listOf(16_384, 16_384), UsbQueueReplay.sizes)
     }
 
     @Test @Config(sdk = [24, 25, 26, 27])
@@ -61,7 +62,7 @@ class UsbReadQueueCompatibilityTest {
         UsbQueueReplay.reset()
         val ncm = ncm(diagnostics::add)
         try { assertEquals(payload.size, readChunk(ncm)) } finally { ncm.close() }
-        assertEquals(listOf(32_768), UsbQueueReplay.sizes)
+        assertEquals(listOf(32_768, 32_768), UsbQueueReplay.sizes) // read, then immediate requeue
         assertTrue(diagnostics.isEmpty())
     }
 
@@ -82,7 +83,8 @@ class UsbReadQueueCompatibilityTest {
         val diagnostics = mutableListOf<String>()
         val ncm = ncm(diagnostics::add)
         try { repeat(2) { assertEquals(payload.size, readChunk(ncm)) } } finally { ncm.close() }
-        assertEquals(listOf(32_768, 16_384, 16_384), UsbQueueReplay.sizes)
+        // Ladder once, then each completion requeues at the retained 16 KiB size.
+        assertEquals(listOf(32_768, 16_384, 16_384, 16_384), UsbQueueReplay.sizes)
         assertTrue(UsbQueueReplay.buffers.all { it === UsbQueueReplay.buffers.first() })
         checkFallbackDiagnostic(diagnostics, "NCM", 32_768)
     }
@@ -100,7 +102,7 @@ class UsbReadQueueCompatibilityTest {
             assertArrayEquals(frame, ncm.recv(1_000))
             assertArrayEquals(followingFrame, ncm.recv(1_000))
         } finally { ncm.close() }
-        assertEquals(listOf(32_768, 16_384, 16_384, 16_384), UsbQueueReplay.sizes)
+        assertEquals(listOf(32_768, 16_384, 16_384, 16_384, 16_384), UsbQueueReplay.sizes)
         assertEquals(listOf(16_384, 16_384, 37), UsbQueueReplay.completedBytes)
         assertEquals(UsbQueueReplay.transfer!!.size, UsbQueueReplay.transferOffset)
         checkFallbackDiagnostic(diagnostics, "NCM", 32_768)
@@ -162,7 +164,8 @@ class UsbReadQueueCompatibilityTest {
             UsbQueueReplay.timeout = false
             assertEquals(payload.size, readChunk(ncm))
         } finally { ncm.close() }
-        assertEquals(listOf(32_768, 16_384), UsbQueueReplay.sizes)
+        // The timed-out request is reused; only the completion's requeue follows it.
+        assertEquals(listOf(32_768, 16_384, 16_384), UsbQueueReplay.sizes)
     }
 
     @Test fun closingUsbmuxAfterRejectedQueuePreventsTheCompatibilityRetry() {
@@ -184,7 +187,8 @@ class UsbReadQueueCompatibilityTest {
         UsbQueueReplay.onQueue = { request ->
             val lock = ReflectionHelpers.getField<Any>(ncm, "stateLock")
             assertTrue(Thread.holdsLock(lock))
-            assertTrue(ReflectionHelpers.getField<UsbRequest>(ncm, "readRequest") === request)
+            val head = ReflectionHelpers.getField<Array<Any>>(ncm, "readSlots")[0]
+            assertTrue(ReflectionHelpers.getField<UsbRequest>(head, "request") === request)
             ncm.close()
         }
         try { expectUnavailable { readChunk(ncm) } } finally { ncm.close() }
@@ -220,9 +224,11 @@ class UsbReadQueueCompatibilityTest {
     private fun pipe(onDiagnostic: (String) -> Unit = {}) =
         Iap2UsbSession(SharedUsbDeviceConnection.own(connection()), ReflectionHelpers.newInstance(UsbInterface::class.java),
             endpoint(0x04), endpoint(0x85), onDiagnostic)
+    // One read request: this replay models a single pending read and checks the size ladder in
+    // isolation. The concurrent read ring is covered by NcmUsbBridgeFramingTest.
     private fun ncm(onDiagnostic: (String) -> Unit = {}) =
         NcmUsbBridge(SharedUsbDeviceConnection.own(connection()), endpoint(0x06), endpoint(0x85), null,
-            emptyList(), true, null, onDiagnostic)
+            emptyList(), true, null, onDiagnostic, readRequestCount = 1)
     private fun connection(): UsbDeviceConnection = ReflectionHelpers.callConstructor(
         UsbDeviceConnection::class.java, ClassParameter.from(UsbDevice::class.java, null))
     private fun endpoint(address: Int): UsbEndpoint = ReflectionHelpers.callConstructor(

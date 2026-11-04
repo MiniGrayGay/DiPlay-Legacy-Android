@@ -34,6 +34,8 @@ class NcmUsbBridge internal constructor(
     private val legacyRestore: (() -> Unit)? = null,
     /** Issue #279: the data interface, kept so a wedged OUT endpoint can be reset in place. */
     private val dataInterface: UsbInterface? = null,
+    /** Concurrent bulk IN reads (see [READ_REQUEST_COUNT]); 1 restores the single-read path. */
+    readRequestCount: Int = READ_REQUEST_COUNT,
 ) : Closeable {
     private val descriptorMac = descriptorHostMac?.copyOf()
     val hostMac: ByteArray? get() = descriptorMac?.copyOf()
@@ -118,7 +120,7 @@ class NcmUsbBridge internal constructor(
         var request: UsbRequest? = null
         var queued = false
     }
-    private val readSlots = Array(READ_REQUEST_COUNT) {
+    private val readSlots = Array(readRequestCount.coerceAtLeast(1)) {
         ReadSlot(ByteBuffer.allocateDirect(usbTransferSize(realSdkInt(), READ_CHUNK_BYTES)))
     }
     private var readHead = 0
@@ -471,7 +473,7 @@ class NcmUsbBridge internal constructor(
             readWaitMillis = perfReadWaitNanos / NANOS_PER_MILLISECOND,
             readReadyOnAwait = perfReadReadyOnAwait,
             readInFlightAvg = if (perfReadCompletions == 0L) 0.0 else perfReadInFlightSum.toDouble() / perfReadCompletions,
-            requestsConfigured = if (useAsyncRead) READ_REQUEST_COUNT else 0,
+            requestsConfigured = if (useAsyncRead) readSlots.size else 0,
             concurrentReadsDisabled = concurrentReadsDisabled,
             framesDelivered = perfFramesDelivered,
             deliverMillis = perfDeliverNanos / NANOS_PER_MILLISECOND,
