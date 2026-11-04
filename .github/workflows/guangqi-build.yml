@@ -79,7 +79,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          ./gradlew :mobile:assembleRelease -x verifyReleaseSigningIdentity
+          ./gradlew :mobile:assembleRelease
 
       - name: Compute SHA-256
         id: sha
