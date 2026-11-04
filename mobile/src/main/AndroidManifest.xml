@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    xmlns:tools="http://schemas.android.com/tools"
+    android:sharedUserId="android.uid.system">
 
     <uses-sdk tools:overrideLibrary="androidx.media3.ui,androidx.media3.extractor,androidx.media3.exoplayer,androidx.media3.exoplayer.hls,androidx.media3.common,androidx.media3.datasource,androidx.media3.database,androidx.media3.container,androidx.media3.decoder,androidx.media,androidx.core,androidx.core.ktx,androidx.annotation.experimental" />
     <application

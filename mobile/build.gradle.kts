@@ -13,6 +13,28 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// Guangqi head-unit platform certificate (signing/platform.x509.pem).
+val guangqiPlatformCertSha256 = "7fbae817b7db24642d8959c347b561c003c6cfde2cb10f909c932f21a4d6d804"
+
+fun envOrDefault(name: String, default: String): String {
+    val value = providers.environmentVariable(name).orNull
+    return if (value.isNullOrBlank()) default else value
+}
+
+fun resolvePlatformKeystore(): java.io.File {
+    providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+        ?.let { file(it) }
+        ?.takeIf { it.isFile }
+        ?.let { return it }
+    return listOf(
+        rootProject.file("platform.jks"),
+        rootProject.file("release-signing.jks"),
+        rootProject.file("release-signing.keystore"),
+        rootProject.file("../../signing/platform.p12"),
+        rootProject.file("../../apps/EngineerMode/platform.jks"),
+    ).firstOrNull { it.isFile } ?: rootProject.file("../../signing/platform.p12")
+}
+
 // Optional local-only input. CI and ordinary source builds contain no accessory identity.
 val localAuthenticationAssets = providers.environmentVariable("DIPLAY_AUTH_ASSETS_DIR")
     .orNull?.let { file(it).canonicalFile }
@@ -43,16 +65,15 @@ android {
 
     signingConfigs {
         create("release") {
-            val localKeystore = rootProject.file("release-signing.jks").takeIf { it.isFile }
-                ?: rootProject.file("release-signing.keystore").takeIf { it.isFile }
-            storeFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
-                .orNull?.let { file(it) } ?: localKeystore ?: file("missing-release-keystore.jks")
-            // No default signing credentials (docs/RELEASE_SIGNING.md): without
-            // explicit ANDROID_KEY* variables the values stay empty and
-            // verifyReleaseSigningIdentity refuses the build with the reason.
-            storePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orElse("").get()
-            keyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orElse("").get()
-            keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orElse("").get()
+            // Platform key for this head unit. ANDROID_KEY* overrides keep CI secrets working.
+            // v1 is required: the unit is Android 4.4 and does not accept a v2-only APK.
+            val keystore = resolvePlatformKeystore()
+            storeFile = keystore
+            storePassword = envOrDefault("ANDROID_KEYSTORE_PASSWORD", "android")
+            keyAlias = envOrDefault("ANDROID_KEY_ALIAS", "platform")
+            keyPassword = envOrDefault("ANDROID_KEY_PASSWORD", "android")
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
@@ -60,6 +81,7 @@ android {
         debug {
             applicationIdSuffix = ".hudtest"
             versionNameSuffix = "-hud-test"
+            signingConfig = signingConfigs.getByName("release")
         }
         release {
             optimization {
@@ -106,22 +128,17 @@ abstract class VerifyDiPlaySigningTask : DefaultTask() {
     @get:Input abstract val keyStorePassword: Property<String>
     @get:Input abstract val keyAlias: Property<String>
     @get:Input abstract val keyPassword: Property<String>
+    @get:Input abstract val expectedFingerprint: Property<String>
 
     @TaskAction fun verify() {
         val keyFile = keyStoreFile.orNull?.asFile
         check(keyFile?.isFile == true && keyStorePassword.get().isNotBlank() &&
             keyAlias.get().isNotBlank() && keyPassword.get().isNotBlank()) {
-            "Release requires the original DiPlay signing keystore and explicit ANDROID_KEY* variables. Debug signing is forbidden."
+            "Release requires the Guangqi platform keystore (alias platform)."
         }
         val secret = keyStorePassword.get().toCharArray()
-        val store = KeyStore.getInstance(KeyStore.getDefaultType())
-        try {
-            keyFile!!.inputStream().use { store.load(it, secret) }
-        } catch (error: Exception) {
-            throw GradleException("Release signing keystore cannot be opened", error)
-        } finally {
-            secret.fill(0.toChar())
-        }
+        val store = openKeyStore(keyFile!!, secret)
+        secret.fill(0.toChar())
         val alias = keyAlias.get()
         check(store.isKeyEntry(alias)) { "Release signing alias is not a private key entry" }
         val privateKey = runCatching { store.getKey(alias, keyPassword.get().toCharArray()) }.getOrNull()
@@ -129,18 +146,33 @@ abstract class VerifyDiPlaySigningTask : DefaultTask() {
         val cert = store.getCertificate(alias) ?: throw GradleException("Release signing certificate not found")
         val fingerprint = MessageDigest.getInstance("SHA-256")
             .digest(cert.encoded).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        check(fingerprint.equals("bca015c0cb43469fee55539b4054ff862671e7b41e6612eee0cb8566d327b7ae", true)) {
-            "Release certificate differs from v0.2.21; refusing to create an update-incompatible APK."
+        check(fingerprint.equals(expectedFingerprint.get(), true)) {
+            "Release certificate is not the Guangqi platform certificate."
         }
+    }
+
+    private fun openKeyStore(keyFile: java.io.File, password: CharArray): KeyStore {
+        var last: Exception? = null
+        for (type in listOf("PKCS12", "JKS")) {
+            try {
+                val store = KeyStore.getInstance(type)
+                keyFile.inputStream().use { store.load(it, password) }
+                return store
+            } catch (error: Exception) {
+                last = error
+            }
+        }
+        throw GradleException("Release signing keystore cannot be opened", last)
     }
 }
 val verifyReleaseSigningIdentity by tasks.registering(VerifyDiPlaySigningTask::class) {
     group = "verification"
-    description = "Validate the original DiPlay release certificate before any release APK is signed."
+    description = "Validate the Guangqi platform certificate before any release APK is signed."
     keyStoreFile.set(layout.file(providers.provider { android.signingConfigs.getByName("release").storeFile!! }))
-    keyStorePassword.set(providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orElse(""))
-    keyAlias.set(providers.environmentVariable("ANDROID_KEY_ALIAS").orElse(""))
-    keyPassword.set(providers.environmentVariable("ANDROID_KEY_PASSWORD").orElse(""))
+    keyStorePassword.set(envOrDefault("ANDROID_KEYSTORE_PASSWORD", "android"))
+    keyAlias.set(envOrDefault("ANDROID_KEY_ALIAS", "platform"))
+    keyPassword.set(envOrDefault("ANDROID_KEY_PASSWORD", "android"))
+    expectedFingerprint.set(guangqiPlatformCertSha256)
 }
 tasks.matching { it.name == "validateSigningRelease" }.configureEach {
     dependsOn(verifyReleaseSigningIdentity)
