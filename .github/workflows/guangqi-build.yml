@@ -2,7 +2,7 @@ name: Guangqi Release Build
 
 on:
   push:
-    branches: [guangqi, guangqi-vpn-fix]
+    branches: [guangqi, guangqi-vpn-fix, guangqi-lwip-fix]
   workflow_dispatch:
 
 permissions:
