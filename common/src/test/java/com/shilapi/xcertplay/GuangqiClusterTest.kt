@@ -3,6 +3,7 @@ package com.shilapi.xcertplay
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
+import com.shilapi.xcertplay.airplay.AirPlayInsets
 import com.shilapi.xcertplay.airplay.CarPlayClusterDisplay
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -84,19 +85,13 @@ class GuangqiClusterTest {
         assertEquals(CarPlayClusterDisplay.FPS, CarPlayClusterDisplay.config(1280, 720).fps)
     }
 
-    @Test fun clusterMarkerLandsWhereAmapPutsTheCarOnTheGuangqiCluster() {
-        val config = CarPlayClusterDisplay.config(
-            1280, 720, GuangqiCluster.CLUSTER_SCALE_PERCENT,
-            baseSafeArea = GuangqiCluster.SAFE_AREA_PERCENT, fps = GuangqiCluster.CLUSTER_FPS,
-        )
-        val safe = config.safeArea!!
-        val scale = 1280.0 / config.widthPixels
-        // Marker at the centre of the safe area: (640, 480) on the 1280x720 layer.
-        assertEquals(640.0, (safe.left + config.widthPixels - safe.right) / 2.0 * scale, 8.0)
-        assertEquals(480.0, (safe.top + config.heightPixels - safe.bottom) / 2.0 * scale, 8.0)
-        // Inside the area the gauges, clock and trip row leave clear.
-        assertTrue(safe.left * scale >= 127 && safe.right * scale >= 127)
-        assertTrue(safe.bottom * scale >= 71)
+    @Test fun clusterSafeAreaIsTheMeasured16x9AreaScaledToTheStream() {
+        assertEquals(AirPlayInsets(top = 82, bottom = 89, left = 152, right = 152), GuangqiCluster.safeArea(1280, 720))
+        val stream = GuangqiCluster.safeArea(856, 480)
+        assertEquals(AirPlayInsets(top = 55, bottom = 59, left = 102, right = 102), stream)
+        val width = 856 - stream.left - stream.right
+        val height = 480 - stream.top - stream.bottom
+        assertEquals(16.0 / 9, width.toDouble() / height, 0.02)
     }
 
     private fun installClusterService() {
