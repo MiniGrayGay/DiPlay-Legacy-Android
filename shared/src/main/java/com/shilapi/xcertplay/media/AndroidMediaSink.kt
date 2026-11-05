@@ -1480,9 +1480,9 @@ private class VideoDecoder(
         }
     }
 
-    /** MediaCodec.getName() only exists on API 21+; on older devices it throws NoSuchMethodError. */
+    /** MediaCodec.getName() exists from API 18 (4.3); older devices throw NoSuchMethodError. */
     private fun safeDecoderName(codec: MediaCodec): String =
-        if (realSdkInt() >= Build.VERSION_CODES.LOLLIPOP) {
+        if (realSdkInt() >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
             runCatching { codec.name }.getOrDefault("unknown")
         } else {
             "unknown"
