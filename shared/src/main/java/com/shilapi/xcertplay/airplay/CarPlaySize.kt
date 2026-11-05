@@ -5,6 +5,9 @@ package com.shilapi.xcertplay.airplay
  * is expressed as the physical screen width reported to the iPhone: a wider screen gets smaller controls.
  */
 enum class CarPlaySize(val label: String, val widthMillimeters: Int) {
+    // Narrower widths than BYD's screens need: on the Guangqi head unit even Large reads small.
+    HUGE("Huge", 150),
+    EXTRA_LARGE("Extra large", 200),
     LARGE("Large", 250),
     MEDIUM("Medium", 300),
     SMALL("Small", 350);
