@@ -400,6 +400,8 @@
     <string name="your_phone_your_drive">ВАШ ТЕЛЕФОН. ВАША ПОЕЗДКА.</string>
     <string name="your_report_was_saved_to_the_selected_location">Отчёт сохранён в выбранном месте.</string>
     <string name="cluster_waiting_for_map">DiPlay · ожидание карты CarPlay</string>
+    <string name="option_size_huge">Огромный</string>
+    <string name="option_size_extra_large">Очень большой</string>
     <string name="option_size_large">Большой</string>
     <string name="option_size_medium">Средний</string>
     <string name="option_size_small">Маленький</string>

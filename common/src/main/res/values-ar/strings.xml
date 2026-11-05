@@ -400,6 +400,8 @@
     <string name="your_phone_your_drive">هاتفك. رحلتك.</string>
     <string name="your_report_was_saved_to_the_selected_location">تم حفظ تقريرك في الموقع المحدد.</string>
     <string name="cluster_waiting_for_map">DiPlay · بانتظار خريطة CarPlay</string>
+    <string name="option_size_huge">ضخم</string>
+    <string name="option_size_extra_large">كبير جدًا</string>
     <string name="option_size_large">كبير</string>
     <string name="option_size_medium">متوسط</string>
     <string name="option_size_small">صغير</string>
