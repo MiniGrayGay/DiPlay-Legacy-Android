@@ -37,14 +37,23 @@ internal object GuangqiCluster {
     /** Main-screen resolution default (1024x576 on 1280x720), leaving VPU room for the cluster. */
     const val MAIN_RESOLUTION_PERCENT = 80
 
+    /** The cluster layer the safe area was measured on. */
+    const val LAYER_WIDTH = 1280
+    const val LAYER_HEIGHT = 720
+
     /**
-     * Where the car marker goes, in percent of the 1280x720 cluster layer (left, top, right, bottom).
-     * Measured with a ClusterTest grid: the layer is the centre of a wider panel, the gauges cover
-     * its edges outside about x 10–90 %, the temperature and clock sit above y 10 % and the trip and
-     * gear row below y 90 %. The top is raised so the marker lands on (640, 480), where AMap's own
-     * cluster view puts the car.
+     * The area the gauges, clock and trip row leave clear, in pixels of the 1280x720 cluster layer.
+     * Measured on the car with a ClusterTest grid: 976x549, exactly 16:9.
      */
-    val SAFE_AREA_PERCENT = AirPlayInsets(top = 43, bottom = 10, left = 10, right = 10)
+    val SAFE_AREA = AirPlayInsets(top = 82, bottom = 89, left = 152, right = 152)
+
+    /** [SAFE_AREA] scaled to a cluster stream of [width]x[height]. */
+    fun safeArea(width: Int, height: Int): AirPlayInsets {
+        fun x(value: Int) = Math.round(value * width.toDouble() / LAYER_WIDTH).toInt()
+        fun y(value: Int) = Math.round(value * height.toDouble() / LAYER_HEIGHT).toInt()
+        return AirPlayInsets(top = y(SAFE_AREA.top), bottom = y(SAFE_AREA.bottom),
+            left = x(SAFE_AREA.left), right = x(SAFE_AREA.right))
+    }
 
     private const val TAG = "DiPlay-GuangqiCluster"
 

@@ -1595,8 +1595,6 @@ class CarPlayHostActivity : ComponentActivity() {
                 val requestedScale = AirPlayPersistence.loadClusterMapScalePercent(this)
                 val guangqi = GuangqiCluster.present(this)
                 val clusterFps = if (guangqi) GuangqiCluster.CLUSTER_FPS else CarPlayClusterDisplay.FPS
-                val clusterSafeArea = if (guangqi) GuangqiCluster.SAFE_AREA_PERCENT
-                    else CarPlayClusterDisplay.SAFE_AREA_PERCENT
                 fun streamAt(scale: Int) = CarPlayClusterDisplay.config(
                     size.x,
                     size.y,
@@ -1604,9 +1602,8 @@ class CarPlayHostActivity : ComponentActivity() {
                     AirPlayPersistence.loadClusterMarkerHorizontalStep(this),
                     AirPlayPersistence.loadClusterMarkerVerticalStep(this),
                     AirPlayPersistence.loadClusterContent(this),
-                    baseSafeArea = clusterSafeArea,
                     fps = clusterFps,
-                )
+                ).let { if (guangqi) it.copy(safeArea = GuangqiCluster.safeArea(it.widthPixels, it.heightPixels)) else it }
                 val requested = streamAt(requestedScale)
                 // The smaller-map preset enlarges the encoded canvas beyond this panel. Probe
                 // the same selected hardware decoder as the main-screen enlargement guard.
