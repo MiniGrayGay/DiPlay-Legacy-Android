@@ -84,6 +84,21 @@ class GuangqiClusterTest {
         assertEquals(CarPlayClusterDisplay.FPS, CarPlayClusterDisplay.config(1280, 720).fps)
     }
 
+    @Test fun clusterMarkerLandsWhereAmapPutsTheCarOnTheGuangqiCluster() {
+        val config = CarPlayClusterDisplay.config(
+            1280, 720, GuangqiCluster.CLUSTER_SCALE_PERCENT,
+            baseSafeArea = GuangqiCluster.SAFE_AREA_PERCENT, fps = GuangqiCluster.CLUSTER_FPS,
+        )
+        val safe = config.safeArea!!
+        val scale = 1280.0 / config.widthPixels
+        // Marker at the centre of the safe area: (640, 480) on the 1280x720 layer.
+        assertEquals(640.0, (safe.left + config.widthPixels - safe.right) / 2.0 * scale, 8.0)
+        assertEquals(480.0, (safe.top + config.heightPixels - safe.bottom) / 2.0 * scale, 8.0)
+        // Inside the area the gauges, clock and trip row leave clear.
+        assertTrue(safe.left * scale >= 127 && safe.right * scale >= 127)
+        assertTrue(safe.bottom * scale >= 71)
+    }
+
     private fun installClusterService() {
         shadowOf(context.packageManager).installPackage(PackageInfo().apply {
             packageName = GuangqiCluster.SERVICE_PACKAGE

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.util.Log
 import android.view.Display
+import com.shilapi.xcertplay.airplay.AirPlayInsets
 
 /**
  * The Guangqi (GAEI AVNTG2A10) instrument cluster.
@@ -35,6 +36,15 @@ internal object GuangqiCluster {
 
     /** Main-screen resolution default (1024x576 on 1280x720), leaving VPU room for the cluster. */
     const val MAIN_RESOLUTION_PERCENT = 80
+
+    /**
+     * Where the car marker goes, in percent of the 1280x720 cluster layer (left, top, right, bottom).
+     * Measured with a ClusterTest grid: the layer is the centre of a wider panel, the gauges cover
+     * its edges outside about x 10–90 %, the temperature and clock sit above y 10 % and the trip and
+     * gear row below y 90 %. The top is raised so the marker lands on (640, 480), where AMap's own
+     * cluster view puts the car.
+     */
+    val SAFE_AREA_PERCENT = AirPlayInsets(top = 43, bottom = 10, left = 10, right = 10)
 
     private const val TAG = "DiPlay-GuangqiCluster"
 
